@@ -1,0 +1,37 @@
+tasks:
+  - id: H1
+    type: devops
+    title: "基础设施检查"
+    state: ✅
+    depends_on: []
+    result: 全部 8 个服务在线
+  - id: H2
+    type: qa
+    title: "API 冒烟测试"
+    state: ✅
+    depends_on: [H1]
+    result: 5/5 端点 200
+  - id: H3
+    type: qa
+    title: "注册新账号 + tenant 激活"
+    state: ✅
+    depends_on: [H2]
+    result: 注册成功 + org_id=8136977921419672659
+  - id: H4
+    type: qa
+    title: "视频生成测试"
+    state: ✅
+    depends_on: [H3]
+    result: Pixverse-V6.0 生成成功，25 points 扣分，视频 URL 已返回
+  - id: H5
+    type: qa
+    title: "回归测试"
+    state: ✅
+    depends_on: [H2]
+    result: test_harness_fixes.py exit=0 (10/10)
+  - id: H6
+    type: review
+    title: "全链路测试汇总"
+    state: ✅
+    depends_on: [H3, H4, H5]
+    result: 5/5 全部通过

@@ -1,0 +1,73 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+*.egg
+.venv/
+venv/
+env/
+
+# ===== Node.js =====
+node_modules/
+npm-debug.log*
+
+# ===== 构建产物 =====
+backend/build/
+backend/dist/
+frontend/dist/
+
+# ===== 运行时数据 =====
+backend/data/
+backend/logs/
+backend/jimeng_service/logs/
+backend/jimeng_service/pic/
+backend/screenshots/
+backend/temp/
+data/
+logs/
+*.log
+
+# ===== 敏感 / 用户配置 =====
+backend/.env
+backend/proxies.txt
+backend/jimeng_pool_config.yaml
+frontend/.env.local
+
+# ===== IDE / 编辑器 =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ===== 系统文件 =====
+Thumbs.db
+.DS_Store
+
+# ===== 项目专用排除 =====
+CLAUDE.md
+PRD.md
+*.db
+*.db-journal
+.shared/
+.agent/
+prj.md
+jimeng-api.md
+content_generation.py
+start-e.bat
+docs/
+start - 副本.bat
+
+# ===== dreamina2api 排除 =====
+dreamina2api/README.CN.md
+dreamina2api/jimeng-api/
+dreamina2api/.github/
+dreamina2api/.dockerignore
+dreamina2api/docker-compose.yml
+dreamina2api/Dockerfile
+dreamina2api/get_sessionid.png
+dreamina2api/LICENSE
+
+# ===== jimeng_service 排除 =====
+backend/jimeng_service/README.CN.md

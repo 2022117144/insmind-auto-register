@@ -1,0 +1,19 @@
+name = "dreamina-email-worker"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+# 绑定 KV Namespace
+# 1. 创建 KV: wrangler kv:namespace create "EMAIL_CODES"
+# 2. 将返回的 id 填写到下方
+[[kv_namespaces]]
+binding = "EMAIL_CODES"
+id = "652367927ca04ba29d620fb11597cb0e"
+
+# Email 路由配置
+# 需要在 Cloudflare Dashboard 中配置 Email Routing
+# 设置 Catch-all 规则，将所有邮件转发到此 Worker
+
+# Email Worker 触发器 (必须配置才能接收邮件)
+# 1. 在 Cloudflare Dashboard > nanome.info > Email > Email Routing 中启用
+# 2. 设置 Catch-all address 规则，将所有邮件转发到此 Worker (dreamina-email-worker)
+# 3. 如果需要通过 API 访问，请在 Triggers > Custom Domains 中添加 nanome.info

@@ -1,0 +1,31 @@
+# Dreamina Auto Register System - Python Dependencies
+
+# Web Framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+
+# Database
+sqlalchemy[asyncio]>=2.0.25
+aiosqlite>=0.19.0
+
+# Browser Automation (Patchright - 反检测 Playwright 分支)
+patchright>=1.0.0
+playwright-stealth>=1.0.6
+
+# HTTP Client (with SOCKS proxy support)
+httpx[socks]>=0.26.0
+httpx-socks[asyncio]>=0.9.1
+
+# Configuration
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# Utilities
+python-multipart>=0.0.6
+websockets>=12.0
+pyyaml>=6.0
+
+# Thumbnail Extraction
+Pillow>=10.0.0
+imageio>=2.30.0
+imageio-ffmpeg>=0.4.0

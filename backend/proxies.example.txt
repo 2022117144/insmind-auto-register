@@ -1,0 +1,25 @@
+# 外部代理列表示例 (购买的代理 IP)
+# 格式: 协议://[用户名:密码@]主机:端口
+# 或者是: 协议://主机:端口
+# 支持 http, https, socks5 协议
+# 每行一个，支持使用 # 开头的注释
+
+# 示例 1: 带账号密码的 HTTP 代理
+# http://user123:pass456@112.113.114.115:8888
+
+# 示例 2: 无账号密码的 SOCKS5 代理
+# socks5://122.123.124.125:1080
+
+# 示例 3: HTTPS 代理
+# https://myproxy.com:443
+
+31.59.20.176:6754:sbgeqqsn:phvr5382iodi
+23.95.150.145:6114:sbgeqqsn:phvr5382iodi
+198.23.239.134:6540:sbgeqqsn:phvr5382iodi
+45.38.107.97:6014:sbgeqqsn:phvr5382iodi
+107.172.163.27:6543:sbgeqqsn:phvr5382iodi
+198.105.121.200:6462:sbgeqqsn:phvr5382iodi
+64.137.96.74:6641:sbgeqqsn:phvr5382iodi
+216.10.27.159:6837:sbgeqqsn:phvr5382iodi
+23.26.71.145:5628:sbgeqqsn:phvr5382iodi
+23.229.19.94:8689:sbgeqqsn:phvr5382iodi

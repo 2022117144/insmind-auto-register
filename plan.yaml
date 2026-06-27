@@ -1,0 +1,45 @@
+# insMind 前端适配 — Harness 执行计划
+# 状态: ✅ 全部完成
+
+tasks:
+  - id: A0
+    type: research
+    description: "启动 Harness 系统 (Webhook + Orchestra)"
+    status: completed
+    depends_on: []
+
+  - id: A1
+    type: frontend
+    description: "Sidebar + Routes 增加 insMind Accounts 路由"
+    status: completed
+    depends_on: []
+
+  - id: A2
+    type: frontend
+    description: "创建 InsMindAccounts.tsx 页面（独立标签页）"
+    status: completed
+    depends_on: [A1]
+
+  - id: A3
+    type: frontend
+    description: "ContentGeneration 页—模型名改为 insMind 的 Pixverse/Kling/Wan/Seedance"
+    status: completed
+    depends_on: []
+
+  - id: A4
+    type: frontend
+    description: "Settings 页—dreamina_url 改为 insmind_url，字段对齐 API"
+    status: completed
+    depends_on: []
+
+  - id: A5
+    type: frontend
+    description: "更新翻译键（补充 insMind Accounts 新页面的翻译）"
+    status: completed
+    depends_on: [A1]
+
+  - id: A6
+    type: review
+    description: "验证前端编译 + API 联通性"
+    status: completed
+    depends_on: [A1, A2, A3, A4, A5]

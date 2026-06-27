@@ -1,0 +1,125 @@
+Metadata-Version: 2.4
+Name: httpx-socks
+Version: 0.11.0
+Summary: Proxy (HTTP, SOCKS) transports for httpx
+Author-email: Roman Snegirev <snegiryev@gmail.com>
+License: Apache-2.0
+Project-URL: homepage, https://github.com/romis2012/httpx-socks
+Project-URL: repository, https://github.com/romis2012/httpx-socks
+Keywords: httpx,socks,socks5,socks4,http,proxy,asyncio,trio,anyio
+Classifier: Development Status :: 5 - Production/Stable
+Classifier: Programming Language :: Python
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3 :: Only
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Programming Language :: Python :: 3.14
+Classifier: Operating System :: MacOS
+Classifier: Operating System :: Microsoft
+Classifier: Operating System :: POSIX :: Linux
+Classifier: Topic :: Internet :: WWW/HTTP
+Classifier: Intended Audience :: Developers
+Classifier: Framework :: AsyncIO
+Classifier: Framework :: Trio
+Classifier: License :: OSI Approved :: Apache Software License
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+License-File: LICENSE.txt
+Requires-Dist: httpx<0.29.0,>=0.28.0
+Requires-Dist: httpcore<2.0,>=1.0
+Requires-Dist: python-socks<3.0.0,>=2.4.3
+Requires-Dist: sniffio>=1.1.0
+Provides-Extra: asyncio
+Requires-Dist: async-timeout>=4.0; python_version < "3.11" and extra == "asyncio"
+Provides-Extra: trio
+Requires-Dist: trio>=0.24; extra == "trio"
+Provides-Extra: anyio
+Requires-Dist: anyio<5.0.0,>=3.3.4; extra == "anyio"
+Dynamic: license-file
+
+# httpx-socks
+
+[![CI](https://github.com/romis2012/httpx-socks/actions/workflows/ci.yml/badge.svg)](https://github.com/romis2012/httpx-socks/actions/workflows/ci.yml)
+[![Coverage Status](https://codecov.io/gh/romis2012/httpx-socks/branch/master/graph/badge.svg)](https://codecov.io/gh/romis2012/httpx-socks)
+[![PyPI version](https://badge.fury.io/py/httpx-socks.svg)](https://pypi.python.org/pypi/httpx-socks)
+[![versions](https://img.shields.io/pypi/pyversions/httpx-socks.svg)](https://github.com/romis2012/httpx-socks)
+<!--
+[![Downloads](https://pepy.tech/badge/httpx-socks/month)](https://pepy.tech/project/httpx-socks)
+-->
+
+The `httpx-socks` package provides proxy transports for [httpx](https://github.com/encode/httpx) client. 
+SOCKS4(a), SOCKS5(h), HTTP CONNECT proxy supported.
+It uses [python-socks](https://github.com/romis2012/python-socks) for core proxy functionality.
+
+
+## Requirements
+- Python >= 3.8
+- httpx>=0.28.0,<0.29.0
+- python-socks>=2.4.3,<3.0.0
+- trio>=0.24 (optional)
+- anyio>=3.3.4,<5.0.0 (optional)
+
+
+## Installation
+
+only sync proxy support:
+```
+pip install httpx-socks
+```
+
+to include optional asyncio support (it requires async-timeout):
+```
+pip install httpx-socks[asyncio]
+```
+
+to include optional trio support:
+```
+pip install httpx-socks[trio]
+```
+
+## Usage
+
+#### sync transport
+```python
+import httpx
+from httpx_socks import SyncProxyTransport
+
+def fetch(url):
+    transport = SyncProxyTransport.from_url('socks5://user:password@127.0.0.1:1080')
+    with httpx.Client(transport=transport) as client:
+        res = client.get(url)
+        return res.text
+```
+
+#### async transport (asyncio, trio)
+```python
+import httpx
+from httpx_socks import AsyncProxyTransport
+
+async def fetch(url):
+    transport = AsyncProxyTransport.from_url('socks5://user:password@127.0.0.1:1080')
+    async with httpx.AsyncClient(transport=transport) as client:
+        res = await client.get(url)
+        return res.text
+```
+
+#### secure proxy connections (aka "HTTPS proxies", experimental feature, both sync and async support)
+```python
+import ssl
+import httpx
+from httpx_socks import AsyncProxyTransport
+
+async def fetch(url):
+    proxy_ssl = ssl.SSLContext(ssl.PROTOCOL_TLS)
+    proxy_ssl.verify_mode = ssl.CERT_REQUIRED
+    proxy_ssl.load_verify_locations(...)
+    
+    transport = AsyncProxyTransport.from_url('http://user:password@127.0.0.1:8080', proxy_ssl=proxy_ssl)
+    async with httpx.AsyncClient(transport=transport) as client:
+        res = await client.get(url)
+        return res.text
+```
