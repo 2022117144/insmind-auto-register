@@ -17,11 +17,11 @@ type FilterType = 'all' | 'image' | 'video'
 
 const fallbackModelOptions: Record<JobType, string[]> = {
     image: ['gpt-image-2', 'gpt-image-2-extreme', 'Qwen-Image-2-0', 'Qwen-Image-2-0-Pro', 'Nano-Banana2-Flash'],
-    video: ['Pixverse-V6.0'],
+    video: ['Pixverse-V6.0', 'Seedance-2.0-Mini'],
 }
 
 const ACTIVE_JOB_STATUSES: ContentGenerationJob['status'][] = ['submitting', 'submitted', 'processing']
-const SEEDANCE_MODELS = ['Seedance-2.0', 'VEO-3.1', 'Wan-2.6']
+const SEEDANCE_MODELS = ['Seedance-2.0', 'Seedance-2.0-Mini', 'VEO-3.1', 'Wan-2.6']
 
 const POLL_INTERVAL_MS = 4000
 const CACHE_STALE_MS = 10000
@@ -56,6 +56,8 @@ export default function ContentGeneration() {
 
     const durationOptions = useMemo(() => {
         if (jobType !== 'video') return []
+        if (model === 'Seedance-2.0-Mini') return [5]
+        if (model === 'Pixverse-V6.0') return [10]
         if (SEEDANCE_MODELS.includes(model)) {
             return Array.from({ length: 12 }, (_, index) => index + 4)
         }
@@ -89,7 +91,7 @@ export default function ContentGeneration() {
             const nextOptions: Record<JobType, string[]> = {
                 image: data.image_models.length ? data.image_models : fallbackModelOptions.image,
                 video: data.video_models.length
-                    ? data.video_models.filter((m: string) => m === 'Pixverse-V6.0')
+                    ? data.video_models.filter((m: string) => m === 'Pixverse-V6.0' || m === 'Seedance-2.0-Mini' || m === 'Seedance-2.0')
                     : fallbackModelOptions.video,
             }
             setModelOptions(nextOptions)
@@ -149,6 +151,16 @@ export default function ContentGeneration() {
             setOmniReferenceEnabled(false)
         }
     }, [supportsOmniReference, omniReferenceEnabled])
+
+    useEffect(() => {
+        if (model === 'Seedance-2.0-Mini') {
+            setResolution('480p')
+            setDuration(5)
+        } else if (model === 'Pixverse-V6.0') {
+            setResolution('360p')
+            setDuration(10)
+        }
+    }, [model])
 
     useEffect(() => {
         if (jobType === 'video') {
@@ -786,7 +798,7 @@ export default function ContentGeneration() {
                                 </div>
                             </SelectTrigger>
                             <SelectContent side="top" className="rounded-xl border-white/10 bg-black/90 backdrop-blur-xl mb-2">
-                                {(jobType === 'image' ? ['1k', '2k', '4k'] : ['360p']).map((item) => (
+                                {(jobType === 'image' ? ['1k', '2k', '4k'] : model === 'Pixverse-V6.0' ? ['360p'] : model === 'Seedance-2.0-Mini' ? ['480p'] : ['360p', '480p']).map((item) => (
                                     <SelectItem key={item} value={item} className="rounded-lg focus:bg-white/10 cursor-pointer">{item}</SelectItem>
                                 ))}
                             </SelectContent>

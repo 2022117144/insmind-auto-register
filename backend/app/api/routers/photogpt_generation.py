@@ -26,6 +26,44 @@ PHOTOGPT_IMAGE_KEY = "nc_tianyaoxiayu_a9c2d_pred_aa91bc7-fandehen-4d2fa8c1b9_pg-
 PHOTOGPT_API = "https://photogpt.io"
 PHOTOGPT_CDN = "https://cdn.static-boost.com"
 
+# 完整浏览器请求头（模拟 Chrome 134）
+_BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Sec-Ch-Ua": '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+    "Connection": "keep-alive",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+}
+
+# 完整浏览器 headers，绕过 PhotoGPT WAF/Cloudflare 指纹检测
+BROWSER_HEADERS = {
+    "Content-Type": "application/json",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Origin": "https://photogpt.io",
+    "Referer": "https://photogpt.io/ai-models/gpt-image-2",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Sec-Ch-Ua": '"Google Chrome";v="125", "Chromium";v="125", "Not.A/Brand";v="24"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
+}
+
+# 用于 GET 请求（不含 Content-Type，GET 不需要）
+POLL_HEADERS = {k: v for k, v in BROWSER_HEADERS.items() if k.lower() != "content-type"}
+
 # Proxy auto-detect (cached)
 _proxy_url: Optional[str] = None
 _proxy_checked = False
@@ -42,7 +80,7 @@ def _get_proxy() -> Optional[str]:
             return _proxy_url
         except:
             continue
-    _proxy_url = ""
+    _proxy_url = None
     return None
 
 # ── Schemas ──────────────────────────────────────────────────────
@@ -108,6 +146,21 @@ async def _acquire_account(db: AsyncSession) -> Optional[PhotoGPTAccount]:
         return account
     return None
 
+
+async def _release_account(account_id: int, db: AsyncSession):
+    """生成失败时释放账号锁"""
+    from sqlalchemy import update as sql_update
+    try:
+        await db.execute(
+            sql_update(PhotoGPTAccount)
+            .where(PhotoGPTAccount.id == account_id)
+            .values(gen_locked_until=None)
+        )
+        await db.commit()
+    except Exception:
+        pass
+
+
 async def _auto_disable_account(account: PhotoGPTAccount, db: AsyncSession, reason: str):
     await db.execute(
         update(PhotoGPTAccount)
@@ -118,6 +171,7 @@ async def _auto_disable_account(account: PhotoGPTAccount, db: AsyncSession, reas
         )
     )
     await db.commit()
+
 
 # ── Polling ─────────────────────────────────────────────────────
 
@@ -132,14 +186,13 @@ async def _poll_generation(nc_token: str, project_id: str, job_id: int):
                     f"{PHOTOGPT_API}/api/v1/prediction/get-status",
                     params={"project_id": project_id},
                     cookies=cookies,
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                        "Origin": PHOTOGPT_API,
-                        "Referer": f"{PHOTOGPT_API}/ai-models/gpt-image-2",
-                    },
+                    headers=POLL_HEADERS,
                 )
                 if r.status_code != 200:
+                    logger.warning(f"POLL_NON200[{i+1}] status={r.status_code} body={r.text[:300]}")
                     continue
+                raw_text = r.text
+                logger.warning(f"POLL_RAW[{i+1}] status=200 body={raw_text[:500]}")
                 data = r.json()
                 code = data.get("code")
                 if code == 100014:
@@ -225,10 +278,7 @@ async def photogpt_generate(req: PhotoGPTGenerateRequest, db: AsyncSession = Dep
             r = await c.post(
                 f"{PHOTOGPT_API}/api/v1/auth/login",
                 json={"email": account.email, "password": account.password or "Test123456!"},
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "Origin": PHOTOGPT_API,
-                },
+                headers=BROWSER_HEADERS,
             )
             login_data = r.json()
             if login_data.get("code") != 100000:
@@ -238,6 +288,7 @@ async def photogpt_generate(req: PhotoGPTGenerateRequest, db: AsyncSession = Dep
             # Get nc_token from cookies (NOT Bearer token — PhotoGPT uses cookies!)
             nc_token = c.cookies.get("nc_token", "")
             if not nc_token:
+                await _release_account(account.id, db)
                 raise HTTPException(status_code=502, detail="登录后未获取到 nc_token")
 
             t = int(time.time())
@@ -256,22 +307,20 @@ async def photogpt_generate(req: PhotoGPTGenerateRequest, db: AsyncSession = Dep
             handle_params["sign"] = _compute_sign(handle_params, PHOTOGPT_IMAGE_KEY)
 
             # Submit handle — auth via nc_token cookie, NOT Bearer header
+            # NOTE: nc_token 已在登录后存入 cookie jar，httpx 会自动带上
+            # 不要传 cookies= 参数，否则 httpx 会合并 jar + explicit cookies 导致重复
             r2 = await c.post(
                 f"{PHOTOGPT_API}/api/v1/prediction/handle",
                 json=handle_params,
-                cookies={"nc_token": nc_token},
-                headers={
-                    "Content-Type": "application/json",
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "Origin": PHOTOGPT_API,
-                    "Referer": f"{PHOTOGPT_API}/ai-models/gpt-image-2",
-                },
+                headers=BROWSER_HEADERS,
             )
             gen_data = r2.json()
             if gen_data.get("code") != 100000:
                 err_msg = gen_data.get("message", "")
                 if "credits" in err_msg.lower() or "0 credits" in err_msg:
                     await _auto_disable_account(account, db, "insufficient_credits")
+                else:
+                    await _release_account(account.id, db)
                 raise HTTPException(status_code=502, detail=f"PhotoGPT 生成提交失败: {err_msg}")
 
             project_id = gen_data["data"]["project_id"]
@@ -295,6 +344,7 @@ async def photogpt_generate(req: PhotoGPTGenerateRequest, db: AsyncSession = Dep
         raise
     except Exception as e:
         logger.error(f"PhotoGPT generate error: {e}")
+        await _release_account(account.id, db)
         await db.execute(update(PhotoGPTJob).where(PhotoGPTJob.id == job.id).values(status="failed", error_message=str(e)))
         await db.commit()
         return PhotoGPTGenerateResponse(success=False, error=str(e))
@@ -324,3 +374,25 @@ async def photogpt_batch_delete_jobs(body: dict, db: AsyncSession = Depends(get_
     r = await db.execute(delete(PhotoGPTJob).where(PhotoGPTJob.id.in_(ids)))
     await db.commit()
     return {"deleted": r.rowcount}
+
+
+@router.get("/photogpt/image-proxy")
+async def photogpt_image_proxy(url: str = Query(...)):
+    """代理加载 PhotoGPT CDN 图片，绕过直连限制"""
+    proxy = _get_proxy()
+    async with httpx.AsyncClient(timeout=30, proxy=proxy) as c:
+        resp = await c.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://photogpt.io/",
+            },
+        )
+        if resp.status_code != 200:
+            raise HTTPException(status_code=resp.status_code, detail="图片加载失败")
+        from fastapi.responses import Response
+        return Response(
+            content=resp.content,
+            media_type=resp.headers.get("content-type", "image/png"),
+            headers={"Cache-Control": "public, max-age=86400"},
+        )

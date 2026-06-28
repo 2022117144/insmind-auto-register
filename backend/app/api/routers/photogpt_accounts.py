@@ -65,7 +65,7 @@ def _get_proxy() -> Optional[str]:
             return _proxy_url
         except:
             continue
-    _proxy_url = ""
+    _proxy_url = None
     return None
 
 
@@ -109,54 +109,40 @@ def _run_register_sync(password: str, proxy_url: Optional[str] = None, max_retri
     }
 
     def _poll_verify(email: str) -> str | None:
-        """轮询 temp-mail 收验证信，返回 register_token 或 None"""
-        mail_http = httpx.Client(
-            base_url="https://api.internal.temp-mail.io",
-            timeout=15,
-            proxy=proxy_url,
-        )
-        try:
-            domain = email.split("@", 1)[-1] if "@" in email else ""
-            for i in range(20):  # ~60s
-                time.sleep(3)
-                try:
-                    r = mail_http.get(f"/api/v3/email/{email}/messages")
-                    if r.status_code != 200:
+        """轮询 api.internal.temp-mail.io 收验证信，返回 register_token 或 None"""
+        for i in range(20):  # ~60s
+            time.sleep(3)
+            try:
+                r = httpx.get(f"https://api.internal.temp-mail.io/api/v3/email/{email}/messages")
+                if r.status_code != 200:
+                    continue
+                messages = r.json()
+                if not isinstance(messages, list):
+                    continue
+                for msg in messages:
+                    sender = msg.get("from_address", "") or msg.get("from", "")
+                    subject = msg.get("subject", "")
+                    body = msg.get("body_text", "") or msg.get("body_html", "") or ""
+                    if "photogpt" not in sender.lower() and "photogpt" not in subject.lower() and "photogpt" not in body.lower():
                         continue
-                    messages = r.json()
-                    if not isinstance(messages, list):
-                        continue
-                    for msg in messages:
-                        sender = msg.get("from_address", "") or msg.get("from", "")
-                        subject = msg.get("subject", "")
-                        body = msg.get("body_text", "") or msg.get("body_html", "") or ""
-                        if "photogpt" not in sender.lower() and "photogpt" not in subject.lower() and "photogpt" not in body.lower():
-                            continue
-                        match = re.search(r'user-confirm\?token=([^&\s"]+)', body)
-                        if not match:
-                            match = re.search(r'/user-confirm\?token=([^&\s"]+)', body)
-                        if match:
-                            return match.group(1)
-                except Exception:
-                    pass
-            # 超时没收到 → 标记该域名可能被屏蔽
-            if domain:
-                _KNOWN_BLOCKED_DOMAINS.add(domain)
-            return None
-        finally:
-            mail_http.close()
+                    match = re.search(r'user-confirm\?token=([^&\s"]+)', body)
+                    if not match:
+                        match = re.search(r'/user-confirm\?token=([^&\s"]+)', body)
+                    if match:
+                        return match.group(1)
+            except Exception:
+                pass
+        # 超时没收到 → 标记该域名可能被屏蔽
+        domain = email.split("@", 1)[-1] if "@" in email else ""
+        if domain:
+            _KNOWN_BLOCKED_DOMAINS.add(domain)
+        return None
 
     def _gen_email() -> str | None:
-        """从 temp-mail 生成一个新邮箱，跳过已知被屏蔽的域名"""
-        mail_http = httpx.Client(
-            base_url="https://api.internal.temp-mail.io",
-            timeout=15,
-            proxy=proxy_url,
-        )
-        try:
-            # 最多试 5 次换域名
-            for _ in range(5):
-                r = mail_http.post("/api/v3/email/new")
+        """从 api.internal.temp-mail.io 生成一个新邮箱，跳过已知被屏蔽的域名"""
+        for _ in range(5):
+            try:
+                r = httpx.post("https://api.internal.temp-mail.io/api/v3/email/new")
                 if r.status_code != 200:
                     continue
                 data = r.json()
@@ -167,9 +153,9 @@ def _run_register_sync(password: str, proxy_url: Optional[str] = None, max_retri
                 if domain in _KNOWN_BLOCKED_DOMAINS:
                     continue
                 return email
-            return None
-        finally:
-            mail_http.close()
+            except Exception:
+                continue
+        return None
 
     last_error = ""
     for attempt in range(max_retries):

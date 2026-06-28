@@ -290,6 +290,7 @@ var SCENE_CODE_MAP = {
   "Wan-2.2": "Wan22",
   "Kling-3.0": "Kling30",
   "Seedance-2.0": "Seedance20",
+  "Seedance-2.0-Mini": "Seedance20Mini",
   "VEO-3.1": "VEO31"
 };
 function getInnerToken(account) {
@@ -501,6 +502,7 @@ router.get("/models", async (ctx) => {
     { id: "Wan-2.2", name: "Wan 2.2", points: 20 },
     { id: "Kling-3.0", name: "Kling 3.0", points: 60 },
     { id: "Seedance-2.0", name: "Seedance 2.0", points: 40 },
+    { id: "Seedance-2.0-Mini", name: "Seedance 2.0 Mini", points: 20 },
     { id: "VEO-3.1", name: "VEO 3.1", points: 70 }
   ];
   ctx.body = {
@@ -529,10 +531,11 @@ router.post("/v1/videos/pricing", async (ctx) => {
     "Wan-2.2": 20,
     "Kling-3.0": 60,
     "Seedance-2.0": 40,
+    "Seedance-2.0-Mini": 20,
     "VEO-3.1": 70
   };
   const baseCost = baseCosts[model] || 50;
-  const resolutionMultiplier = { "360P": 1, "540P": 1.5, "720P": 2, "1080P": 3 };
+  const resolutionMultiplier = { "360P": 1, "480P": 1.2, "540P": 1.5, "720P": 2, "1080P": 3 };
   const durationMultiplier = Math.ceil(duration / 5);
   ctx.body = { cost: Math.round(baseCost * (resolutionMultiplier[resolution] || 1) * durationMultiplier), model, duration, resolution, currency: "points" };
 });
@@ -743,9 +746,8 @@ router.post("/v1/videos/generations-image", async (ctx) => {
   let finalRawData;
   try {
     finalRawData = await sseFetch("https://sse.insmind.com/api/ai-agent/v1/thread/completion", JSON.stringify(convPayload), sseHeaders, 3e5);
-    console.log(`\u{1F4E1} SSE response (1st): ${finalRawData.length} chars`);
-    if (finalRawData.length < 200)
-      console.log(`\u{1F4C4} SSE content: ${finalRawData}`);
+    console.log(`📡 SSE response (1st): ${finalRawData.length} chars, model=${model}, resolution=${resolution}, duration=${duration}`);
+    console.log(`📄 SSE snippet: ${finalRawData.substring(0, 500)}`);
   } catch (fetchErr) {
     console.error(`\u274C SSE fetch failed: ${fetchErr.message}`);
     ctx.status = 502;

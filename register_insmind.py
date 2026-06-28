@@ -12,7 +12,7 @@ import httpx
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("insmind")
 
-UMS_API = "https://ums.insmind.com"
+TEMPMAIL_API = "https://api.tempmail.ing"
 INSMIND2API_URL = "http://127.0.0.1:5105"
 POLL_INTERVAL = 3
 POLL_TIMEOUT = 120
@@ -20,43 +20,62 @@ PROXY = "http://127.0.0.1:7897"
 
 
 async def create_mail() -> Tuple[str, str]:
-    """获取临时邮箱（temp-mail API 方式，不走浏览器）"""
+    """获取临时邮箱（tempmail.ing API，不走代理，无需鉴权）"""
     import httpx as _httpx
+    import os as _os
+    _saved = {k: _os.environ.pop(k, None) for k in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"]}
     try:
         async with _httpx.AsyncClient(timeout=15.0) as c:
-            r = await c.post("https://api.internal.temp-mail.io/api/v3/email/new")
+            r = await c.post(f"{TEMPMAIL_API}/api/generate", json={"duration": 10})
             if r.status_code == 200:
                 data = r.json()
-                email = data.get("email", "")
-                if email and "@" in email:
-                    logger.info(f"邮箱: {email}")
-                    return email, ""
+                if data.get("success"):
+                    addr = data["email"]["address"]
+                    logger.info(f"邮箱: {addr}")
+                    return addr, addr
+            logger.warning(f"tempmail.ing 创建失败: {r.status_code} {r.text[:200]}")
+            raise Exception("无法获取邮箱")
     except Exception as e:
-        logger.warning(f"temp-mail API 失败: {e}")
-    raise Exception("无法获取邮箱")
+        logger.warning(f"tempmail.ing API 失败: {e}")
+        raise Exception("无法获取邮箱")
+    finally:
+        for k, v in _saved.items():
+            if v is not None:
+                _os.environ[k] = v
 
 
 # 通过 httpx 获取验证码时不走代理（直连云 API）
 async def poll_code(email: str, _mail_token: str = "") -> Optional[str]:
-    """轮询 temp-mail API 获取验证码"""
-    async with httpx.AsyncClient(timeout=10.0) as c:
-        start = asyncio.get_event_loop().time()
-        while (asyncio.get_event_loop().time() - start) < POLL_TIMEOUT:
-            try:
-                r = await c.get(f"https://api.internal.temp-mail.io/api/v3/email/{email}/messages")
-                if r.status_code == 200:
-                    for msg in r.json():
-                        body = msg.get("body_text", "") or ""
-                        subj = msg.get("subject", "")
-                        sender = msg.get("from", "")
-                        if "insmind" in sender.lower() or "insmind" in subj.lower():
-                            if "verify" in subj.lower():
-                                m = re.search(r"(\d{6})", body)
-                                if m: return m.group(1)
-            except Exception:
-                pass
-            await asyncio.sleep(POLL_INTERVAL)
-    return None
+    """轮询 tempmail.ing API 获取验证码"""
+    import os as _os
+    _saved = {k: _os.environ.pop(k, None) for k in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"]}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as c:
+            start = asyncio.get_event_loop().time()
+            while (asyncio.get_event_loop().time() - start) < POLL_TIMEOUT:
+                try:
+                    r = await c.get(f"{TEMPMAIL_API}/api/emails/{email}")
+                    if r.status_code == 200:
+                        data = r.json()
+                        if data.get("success"):
+                            for msg in data.get("emails", []):
+                                subj = msg.get("subject", "")
+                                body = (msg.get("text", "") or msg.get("content", "") or "")
+                                from_addr = msg.get("from_address", "")
+                                if "insmind" in from_addr.lower() or "insmind" in subj.lower():
+                                    if "verify" in subj.lower() or "验证" in subj:
+                                        m = re.search(r"(\d{6})", body)
+                                        if m:
+                                            logger.info(f"验证码: {m.group(1)}")
+                                            return m.group(1)
+                except Exception:
+                    pass
+                await asyncio.sleep(POLL_INTERVAL)
+        return None
+    finally:
+        for k, v in _saved.items():
+            if v is not None:
+                _os.environ[k] = v
 
 
 def decode_token(raw: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:

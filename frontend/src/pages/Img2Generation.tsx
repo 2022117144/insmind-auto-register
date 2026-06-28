@@ -12,6 +12,9 @@ import { GlassDatePicker } from '@/components/ui/glass-date-picker'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 
+const PROXY_PREFIX = '/api/photogpt/image-proxy?url='
+const proxyUrl = (url?: string) => url && url.startsWith('http') ? `${PROXY_PREFIX}${encodeURIComponent(url)}` : url
+
 const ACTIVE_JOB_STATUSES: PhotoGPTGenJob['status'][] = ['submitting', 'submitted', 'processing']
 
 const POLL_INTERVAL_MS = 4000
@@ -410,7 +413,7 @@ export default function Img2Generation() {
                                     >
                                         {cover ? (
                                             <img
-                                                src={cover}
+                                                src={proxyUrl(cover)}
                                                 alt="preview"
                                                 loading="lazy"
                                                 decoding="async"
@@ -515,7 +518,7 @@ export default function Img2Generation() {
                     {previewJob && (
                         <div className="flex flex-col items-center gap-4">
                             <img
-                                src={previewJob.output_urls?.[previewIndex] || ''}
+                                src={proxyUrl(previewJob.output_urls?.[previewIndex] || '')}
                                 alt="生成结果"
                                 className="max-h-[70vh] w-auto object-contain rounded-2xl"
                             />
