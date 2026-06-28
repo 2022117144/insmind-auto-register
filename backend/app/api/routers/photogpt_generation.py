@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Optional, List
 
-import httpx
+from curl_cffi import requests
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, func, delete
@@ -65,9 +65,9 @@ BROWSER_HEADERS = {
 POLL_HEADERS = {k: v for k, v in BROWSER_HEADERS.items() if k.lower() != "content-type"}
 
 # Proxy auto-detect (cached)
-_proxy_url: Optional[str] = None
+_proxy_url: Optional[dict] = None
 _proxy_checked = False
-def _get_proxy() -> Optional[str]:
+def _get_proxy() -> Optional[dict]:
     global _proxy_url, _proxy_checked
     if _proxy_checked:
         return _proxy_url
@@ -76,7 +76,7 @@ def _get_proxy() -> Optional[str]:
         try:
             s = __import__("socket").create_connection(("127.0.0.1", p), timeout=0.5)
             s.close()
-            _proxy_url = f"http://127.0.0.1:{p}"
+            _proxy_url = {"https": f"http://127.0.0.1:{p}", "http": f"http://127.0.0.1:{p}"}
             return _proxy_url
         except:
             continue
@@ -181,7 +181,7 @@ async def _poll_generation(nc_token: str, project_id: str, job_id: int):
     for i in range(60):
         await asyncio.sleep(3)
         try:
-            async with httpx.AsyncClient(timeout=15, proxy=_get_proxy()) as c:
+            async with requests.AsyncSession(impersonate="chrome124", timeout=15, proxies=_get_proxy()) as c:
                 r = await c.get(
                     f"{PHOTOGPT_API}/api/v1/prediction/get-status",
                     params={"project_id": project_id},
@@ -273,7 +273,7 @@ async def photogpt_generate(req: PhotoGPTGenerateRequest, db: AsyncSession = Dep
 
     try:
         proxy = _get_proxy()
-        async with httpx.AsyncClient(timeout=15, proxy=proxy) as c:
+        async with requests.AsyncSession(impersonate="chrome124", timeout=15, proxies=proxy) as c:
             # Login — capture nc_token cookie
             r = await c.post(
                 f"{PHOTOGPT_API}/api/v1/auth/login",
@@ -307,8 +307,8 @@ async def photogpt_generate(req: PhotoGPTGenerateRequest, db: AsyncSession = Dep
             handle_params["sign"] = _compute_sign(handle_params, PHOTOGPT_IMAGE_KEY)
 
             # Submit handle — auth via nc_token cookie, NOT Bearer header
-            # NOTE: nc_token 已在登录后存入 cookie jar，httpx 会自动带上
-            # 不要传 cookies= 参数，否则 httpx 会合并 jar + explicit cookies 导致重复
+            # NOTE: nc_token 已在登录后存入 cookie jar，curl_cffi 会自动带上
+            # 不要传 cookies= 参数，否则会重复发送
             r2 = await c.post(
                 f"{PHOTOGPT_API}/api/v1/prediction/handle",
                 json=handle_params,
@@ -380,7 +380,7 @@ async def photogpt_batch_delete_jobs(body: dict, db: AsyncSession = Depends(get_
 async def photogpt_image_proxy(url: str = Query(...)):
     """代理加载 PhotoGPT CDN 图片，绕过直连限制"""
     proxy = _get_proxy()
-    async with httpx.AsyncClient(timeout=30, proxy=proxy) as c:
+    async with requests.AsyncSession(impersonate="chrome124", timeout=30, proxies=proxy) as c:
         resp = await c.get(
             url,
             headers={
