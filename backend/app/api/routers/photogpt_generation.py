@@ -26,7 +26,6 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
 PHOTOGPT_IMAGE_KEY = "nc_tianyaoxiayu_a9c2d_pred_aa91bc7-fandehen-4d2fa8c1b9_pg-prod"
 PHOTOGPT_API = "https://photogpt.io"
 PHOTOGPT_CDN = "https://cdn.static-boost.com"
@@ -117,11 +116,20 @@ def _compute_sign(params: dict, key: str) -> str:
     return hmac.new(key.encode(), "&".join(parts).encode(), hashlib.sha256).hexdigest()
 
 def _serialize(job) -> dict:
-    return {
+    result = {
         k: v.isoformat() if isinstance(v, datetime) else v
         for k, v in job.__dict__.items()
         if not k.startswith("_") and k != "sa_instance_state"
     }
+    # output_urls / input_urls 存的是 JSON 字符串，需解析为数组
+    for field in ("output_urls", "input_urls"):
+        raw = result.get(field)
+        if isinstance(raw, str):
+            try:
+                result[field] = json.loads(raw)
+            except Exception:
+                result[field] = []
+    return result
 
 # ── Account Management ───────────────────────────────────────────
 
@@ -390,6 +398,28 @@ async def photogpt_generate(req: PhotoGPTGenerateRequest, db: AsyncSession = Dep
 async def photogpt_list_jobs(page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200), db: AsyncSession = Depends(get_db)):
     q = select(PhotoGPTJob).order_by(PhotoGPTJob.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
     return [_serialize(j) for j in (await db.execute(q)).scalars().all()]
+
+
+@router.post("/photogpt/generate/retry")
+async def photogpt_retry_job(body: dict, db: AsyncSession = Depends(get_db)):
+    job_id = body.get("job_id")
+    if not job_id or not isinstance(job_id, int):
+        raise HTTPException(status_code=400, detail="需要 job_id 参数")
+    logger.warning(f"=== RETRY ROUTE HIT: job_id={job_id} ===")
+    """重试失败的 PhotoGPT 生成任务"""
+    job = (await db.execute(select(PhotoGPTJob).where(PhotoGPTJob.id == job_id))).scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if job.status not in ("failed",):
+        raise HTTPException(status_code=400, detail="只有失败的任务可以重试")
+    # 清除旧状态，重新提交
+    await db.execute(
+        update(PhotoGPTJob).where(PhotoGPTJob.id == job_id)
+        .values(status="submitting", error_message=None, project_id=None, output_urls=None, completed_at=None, updated_at=datetime.utcnow())
+    )
+    await db.commit()
+    await db.refresh(job)
+    return _serialize(job)
 
 
 @router.delete("/photogpt/generate/jobs/{job_id}")

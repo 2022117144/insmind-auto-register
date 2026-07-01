@@ -514,6 +514,8 @@ export const photogptGenApi = {
 
     listJobs: () => api.get<PhotoGPTGenJob[]>('/photogpt/generate/jobs'),
 
+    retryJob: (id: number) => api.post<PhotoGPTGenJob>('/photogpt/generate/retry', { job_id: id }),
+
     deleteJob: (id: number) => api.delete<{ message: string }>(`/photogpt/generate/jobs/${id}`),
 
     batchDeleteJobs: (ids: number[]) => api.post<{ deleted: number }>('/photogpt/generate/jobs/batch-delete', { ids }),
