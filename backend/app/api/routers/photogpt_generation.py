@@ -241,6 +241,18 @@ async def _poll_generation(nc_token: str, project_id: str, job_id: int):
                             if url.startswith("/"):
                                 url = f"{PHOTOGPT_CDN}{url}"
                             output_urls.append(url)
+                    if not output_urls:
+                        # PhotoGPT 返回 status=1 但无图片 URL = 被审核拦截
+                        if status_val == 1:
+                            async with async_session_factory() as session:
+                                await session.execute(
+                                    update(PhotoGPTJob).where(PhotoGPTJob.id == job_id)
+                                    .values(status="failed", error_message="图片被审核拦截，未生成实际图片")
+                                )
+                                await session.commit()
+                            return
+                        # 空结果继续轮询
+                        continue
                     async with async_session_factory() as session:
                         await session.execute(
                             update(PhotoGPTJob).where(PhotoGPTJob.id == job_id)
