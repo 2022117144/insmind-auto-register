@@ -15,6 +15,8 @@ import os
 os.environ.setdefault("SSL_CERT_FILE", "D:/hermes/cacert.pem")
 os.environ.setdefault("CURL_CA_BUNDLE", "D:/hermes/cacert.pem")
 from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi.responses import Response
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, func, delete
 
@@ -135,6 +137,15 @@ def _serialize(job) -> dict:
 
 async def _acquire_account(db: AsyncSession) -> Optional[PhotoGPTAccount]:
     now = datetime.utcnow()
+
+    # 先清理已耗尽额度的残留账号（防止上次生成后重启导致自动删除没跑）
+    await db.execute(
+        delete(PhotoGPTAccount).where(
+            PhotoGPTAccount.credits_used >= PhotoGPTAccount.credits
+        )
+    )
+    await db.commit()
+
     stmt = (
         select(PhotoGPTAccount)
         .where(PhotoGPTAccount.status == "active")
@@ -374,11 +385,24 @@ async def photogpt_generate(req: PhotoGPTGenerateRequest, db: AsyncSession = Dep
             update(PhotoGPTJob).where(PhotoGPTJob.id == job.id)
             .values(status="submitted", project_id=project_id)
         )
-        account.credits_used = (account.credits_used or 0) + 1
+
+        # 每次生成消耗 4 个额度（账号初始 20，可生成 5 次）
+        new_credits_used = (account.credits_used or 0) + 4
         await db.execute(
-            update(PhotoGPTAccount).where(PhotoGPTAccount.id == account.id).values(gen_locked_until=None)
+            update(PhotoGPTAccount).where(PhotoGPTAccount.id == account.id).values(
+                gen_locked_until=None,
+                credits_used=new_credits_used,
+            )
         )
         await db.commit()
+
+        # 额度用完 → 自动删除该账号
+        if new_credits_used >= account.credits:
+            await db.execute(
+                delete(PhotoGPTAccount).where(PhotoGPTAccount.id == account.id)
+            )
+            await db.commit()
+            logger.info(f"PhotoGPT account {account.email} auto-deleted (credits exhausted)")
 
         # Start polling with nc_token (NOT Bearer token)
         asyncio.create_task(_poll_generation(nc_token, project_id, job.id))
@@ -442,23 +466,47 @@ async def photogpt_batch_delete_jobs(body: dict, db: AsyncSession = Depends(get_
     return {"deleted": r.rowcount}
 
 
+# 简单内存缓存：url → (下载时间戳, bytes)
+_image_cache: dict[str, tuple[float, bytes]] = {}
+_IMAGE_CACHE_TTL = 600  # 10 分钟
+
+
 @router.get("/photogpt/image-proxy")
 async def photogpt_image_proxy(url: str = Query(...)):
-    """代理加载 PhotoGPT CDN 图片，绕过直连限制"""
-    proxy = _get_proxy()
-    async with requests.AsyncSession(impersonate="chrome124", timeout=30, proxies=proxy) as c:
-        resp = await c.get(
-            url,
-            headers={
+    """代理加载 PhotoGPT CDN 图片"""
+    # 缓存命中直接返回
+    now = time.time()
+    cached = _image_cache.get(url)
+    if cached and now - cached[0] < _IMAGE_CACHE_TTL:
+        return Response(
+            content=cached[1],
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=86400", "X-Cache": "HIT"},
+        )
+
+    # 统一走代理（CDN 也需要 proxy 绕过 Cloudflare）
+    p = _get_proxy()
+    # httpx 0.28.x 要求 proxy 为字符串（非 dict），从 _get_proxy() 返回的 dict 中取值
+    proxy_url = str(p.get("https") or p.get("http")) if p else None
+    try:
+        async with httpx.AsyncClient(proxy=proxy_url, timeout=15.0, follow_redirects=True) as c:
+            resp = await c.get(url, headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "Referer": "https://photogpt.io/",
-            },
-        )
+            })
+
         if resp.status_code != 200:
             raise HTTPException(status_code=resp.status_code, detail="图片加载失败")
-        from fastapi.responses import Response
+
+        body = resp.content
+        # 写入缓存
+        _image_cache[url] = (time.time(), body)
         return Response(
-            content=resp.content,
+            content=body,
             media_type=resp.headers.get("content-type", "image/png"),
             headers={"Cache-Control": "public, max-age=86400"},
         )
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="图片加载超时")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"图片加载失败: {str(e)}")
