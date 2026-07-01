@@ -3,6 +3,7 @@ Content generation API routes with concurrent account locking.
 """
 import json
 import logging
+import time
 import httpx
 import asyncio
 from datetime import datetime
@@ -564,9 +565,31 @@ def _cleanup_local_files(job: ContentGenerationJob):
 
 # ── 图片代理下载 ──────────────────────────────────────────────
 
+# 共享内存缓存（与 image-proxy 共用同一套缓存，URL 相同即命中）
+# 从 photogpt_generation 导入同一份缓存
+from app.api.routers.photogpt_generation import _image_cache as _shared_image_cache
+_download_cache: dict[str, tuple[float, bytes]] = _shared_image_cache
+_DOWNLOAD_CACHE_TTL = 600  # 10 分钟
+
+
 @router.get("/download-proxy")
 async def content_download_proxy(url: str = Query(...)):
     """代理下载单张图片，设置 Content-Disposition 触发浏览器下载"""
+    # 缓存命中直接返回
+    now = time.time()
+    cached = _download_cache.get(url)
+    if cached and now - cached[0] < _DOWNLOAD_CACHE_TTL:
+        filename = url.rsplit("/", 1)[-1].rsplit("?", 1)[0] or "download.png"
+        return Response(
+            content=cached[1],
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Cache-Control": "public, max-age=86400",
+                "X-Cache": "HIT",
+            },
+        )
+
     proxy_url = _detect_proxy()
     async with httpx.AsyncClient(proxy=proxy_url, timeout=30.0, follow_redirects=True) as c:
         try:
@@ -580,8 +603,11 @@ async def content_download_proxy(url: str = Query(...)):
             if resp.status_code != 200:
                 raise HTTPException(status_code=resp.status_code, detail="图片下载失败")
             filename = url.rsplit("/", 1)[-1].rsplit("?", 1)[0] or "download.png"
+            body = resp.content
+            # 写入缓存
+            _download_cache[url] = (time.time(), body)
             return Response(
-                content=resp.content,
+                content=body,
                 media_type=resp.headers.get("content-type", "application/octet-stream"),
                 headers={
                     "Content-Disposition": f'attachment; filename="{filename}"',
