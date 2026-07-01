@@ -308,9 +308,18 @@ export default function PhotoGPTAccounts() {
                                     </TableCell>
                                     <TableCell className="font-medium">{account.email}</TableCell>
                                     <TableCell>
-                                        <Badge variant="outline" className="font-mono text-xs border-white/10">
-                                            {account.credits ?? 0}
-                                        </Badge>
+                                        {(() => {
+                                            const remaining = Math.max(0, (account.credits ?? 0) - (account.credits_used ?? 0))
+                                            const colorClass = remaining <= 0 ? 'text-red-400 border-red-500/30'
+                                                : remaining <= 4 ? 'text-amber-400 border-amber-500/30'
+                                                : remaining <= 8 ? 'text-yellow-400 border-yellow-500/30'
+                                                : 'text-emerald-400 border-emerald-500/30'
+                                            return (
+                                                <Badge variant="outline" className={`font-mono text-xs border-white/10 ${colorClass}`}>
+                                                    {remaining} / {account.credits ?? 0}
+                                                </Badge>
+                                            )
+                                        })()}
                                     </TableCell>
                                     <TableCell>
                                         {account.access_token ? (

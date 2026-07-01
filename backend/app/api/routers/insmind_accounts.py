@@ -373,6 +373,7 @@ async def auto_register_insmind_account(db: AsyncSession = Depends(get_db)):
             logger.info(f"账号已存入本库: {result.get('email')}")
         except Exception as e:
             logger.error(f"存入本库失败: {e}")
+            await db.rollback()
             result["success"] = False
             result["error"] = str(e)
 
