@@ -5,6 +5,7 @@ import os
 
 # 强制指定证书路径（修复项目路径含中文导致 libcurl 加载失败）
 os.environ["SSL_CERT_FILE"] = r"C:\Users\Administrator\cacert.pem"
+os.environ["CURL_CA_BUNDLE"] = r"C:\Users\Administrator\cacert.pem"
 os.environ["REQUESTS_CA_BUNDLE"] = r"C:\Users\Administrator\cacert.pem"
 
 # Windows specific event loop policy fix for Playwright
