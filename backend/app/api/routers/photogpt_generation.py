@@ -9,6 +9,11 @@ from datetime import datetime, timedelta
 from typing import Optional, List
 
 from curl_cffi import requests
+import certifi
+# curl_cffi 在中文路径下 SSL 证书加载失败，显式指定证书路径
+import os
+os.environ.setdefault("SSL_CERT_FILE", "D:/hermes/cacert.pem")
+os.environ.setdefault("CURL_CA_BUNDLE", "D:/hermes/cacert.pem")
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, func, delete
@@ -181,7 +186,7 @@ async def _poll_generation(nc_token: str, project_id: str, job_id: int):
     for i in range(60):
         await asyncio.sleep(3)
         try:
-            async with requests.AsyncSession(impersonate="chrome124", timeout=15, proxies=_get_proxy()) as c:
+            async with requests.AsyncSession(impersonate="chrome124", timeout=20, proxies=_get_proxy()) as c:
                 r = await c.get(
                     f"{PHOTOGPT_API}/api/v1/prediction/get-status",
                     params={"project_id": project_id},
@@ -189,9 +194,13 @@ async def _poll_generation(nc_token: str, project_id: str, job_id: int):
                     headers=POLL_HEADERS,
                 )
                 if r.status_code != 200:
+                    with open("d:/hermes/poll_debug.log", "a") as f:
+                        f.write(f"[{i+1}] NON200 status={r.status_code} body={r.text[:200]}\n")
                     logger.warning(f"POLL_NON200[{i+1}] status={r.status_code} body={r.text[:300]}")
                     continue
                 raw_text = r.text
+                with open("d:/hermes/poll_debug.log", "a") as f:
+                    f.write(f"[{i+1}] nc={nc_token[:10]} pid={project_id[:10]} status=200 body={raw_text[:300]}\n")
                 logger.warning(f"POLL_RAW[{i+1}] status=200 body={raw_text[:500]}")
                 data = r.json()
                 code = data.get("code")
@@ -274,22 +283,49 @@ async def photogpt_generate(req: PhotoGPTGenerateRequest, db: AsyncSession = Dep
     try:
         proxy = _get_proxy()
         async with requests.AsyncSession(impersonate="chrome124", timeout=15, proxies=proxy) as c:
-            # Login — capture nc_token cookie
-            r = await c.post(
-                f"{PHOTOGPT_API}/api/v1/auth/login",
-                json={"email": account.email, "password": account.password or "Test123456!"},
-                headers=BROWSER_HEADERS,
-            )
-            login_data = r.json()
-            if login_data.get("code") != 100000:
-                await _auto_disable_account(account, db, "login_failed")
-                raise HTTPException(status_code=502, detail=f"PhotoGPT 登录失败: {login_data.get('message','')}")
+            # 优先使用数据库里存的 access_token（= nc_token），避免重复登录冲掉 token
+            nc_token = account.access_token or ""
+            logger.warning(f"STORED_ACCESS_TOKEN_CHECK: nc_token={'Y' if nc_token else 'N'}, len={len(nc_token) if nc_token else 0}")
+            if nc_token:
+                # 轻量验证 nc_token 是否有效
+                check_headers = POLL_HEADERS.copy()
+                c.cookies.set("nc_token", nc_token, domain="photogpt.io")
+                check_r = await c.get(
+                    f"{PHOTOGPT_API}/api/v1/userinfo",
+                    headers=check_headers,
+                )
+                check_data = check_r.json()
+                logger.warning(f"TOKEN_CHECK_RESULT: code={check_data.get('code')}, msg={check_data.get('message','')}")
+                if check_data.get("code") != 100000:
+                    nc_token = ""  # 过期了，重新登录
 
-            # Get nc_token from cookies (NOT Bearer token — PhotoGPT uses cookies!)
-            nc_token = c.cookies.get("nc_token", "")
             if not nc_token:
-                await _release_account(account.id, db)
-                raise HTTPException(status_code=502, detail="登录后未获取到 nc_token")
+                logger.warning("TOKEN_EXPIRED, starting login flow")
+                # Login — capture nc_token cookie
+                r = await c.post(
+                    f"{PHOTOGPT_API}/api/v1/auth/login",
+                    json={"email": account.email, "password": account.password or "Test123456!"},
+                    headers=BROWSER_HEADERS,
+                )
+                login_data = r.json()
+                if login_data.get("code") != 100000:
+                    await _auto_disable_account(account, db, "login_failed")
+                    raise HTTPException(status_code=502, detail=f"PhotoGPT 登录失败: {login_data.get('message','')}")
+
+                # Get nc_token from cookies (NOT Bearer token — PhotoGPT uses cookies!)
+                nc_token = c.cookies.get("nc_token", "")
+                login_code = login_data.get("data", {}).get("access_token", "NONE")
+                logger.warning(f"LOGIN_RESULT: nc_from_cookie={'Y' if nc_token else 'N'}, len={len(nc_token) if nc_token else 0}, access_token_from_body={login_code[:15]}...")
+                if not nc_token:
+                    await _release_account(account.id, db)
+                    raise HTTPException(status_code=502, detail="登录后未获取到 nc_token")
+
+                # 存入数据库，下次复用
+                await db.execute(
+                    update(PhotoGPTAccount).where(PhotoGPTAccount.id == account.id)
+                    .values(access_token=nc_token)
+                )
+                await db.commit()
 
             t = int(time.time())
             handle_params = {
