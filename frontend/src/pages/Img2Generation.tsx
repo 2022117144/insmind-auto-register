@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useRef } from 'react'
 import { VirtuosoGrid } from 'react-virtuoso'
-import { Download, Sparkles, Plus, ImageIcon, Box, Scaling, Send, Trash2, RotateCcw, Loader2, ArrowRight, X } from 'lucide-react'
+import { Download, Sparkles, Plus, ImageIcon, Trash2, RotateCcw, Loader2, ArrowRight, X } from 'lucide-react'
 import { photogptGenApi, PhotoGPTGenJob } from '@/services/api'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -40,10 +40,8 @@ export default function Img2Generation() {
     const [selectedIds, setSelectedIds] = useState<number[]>([])
     const [previewJob, setPreviewJob] = useState<PhotoGPTGenJob | null>(null)
     const [previewIndex, setPreviewIndex] = useState(0)
-    const [cardImageIndexes, setCardImageIndexes] = useState<Record<number, number>>({})
-    const [isFocused, setIsFocused] = useState(false)
-    const [isHovered, setIsHovered] = useState(false)
-    const [selectOpen, setSelectOpen] = useState(false)
+    const cardImageIndexesState = useState<Record<number, number>>({}); const cardImageIndexes = cardImageIndexesState[0]
+
     const [generating, setGenerating] = useState(false)
     const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -147,7 +145,7 @@ export default function Img2Generation() {
         setInputImages(prev => [...prev, ...dataUrls].slice(0, 4))
     }
 
-    const handleDrop = async (event: React.DragEvent<HTMLDivElement>) => {
+    const handleDrop = async (event: React.DragEvent<HTMLTextAreaElement>) => {
         event.preventDefault()
         if (event.dataTransfer.files?.length) { await handleFiles(event.dataTransfer.files) }
     }
@@ -186,7 +184,7 @@ export default function Img2Generation() {
 
     const isExpanded = true
 
-    const handleDownload = async (url?: string, index?: number) => {
+    const handleDownload = async (url?: string, _index?: number) => {
         if (!url) return
         const downloadUrl = `/api/content/download-proxy?url=${encodeURIComponent(url)}`
         const link = document.createElement('a')
@@ -269,8 +267,6 @@ export default function Img2Generation() {
                         "relative transition-all duration-300 ease-out",
                         isExpanded ? "w-full" : "w-[600px] mx-auto"
                     )}
-                    onMouseEnter={() => setIsHovered(true)}
-                    onMouseLeave={() => setIsHovered(false)}
                 >
                     <div className={cn(
                         "rounded-3xl border shadow-2xl backdrop-blur-xl transition-all duration-300",
@@ -306,9 +302,8 @@ export default function Img2Generation() {
                                 placeholder="描述你要生成的图片..."
                                 value={prompt}
                                 onChange={e => setPrompt(e.target.value)}
-                                onFocus={() => setIsFocused(true)}
-                                onBlur={() => setIsFocused(false)}
                                 onPaste={handlePaste}
+                                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && prompt.trim()) { e.preventDefault(); handleGenerate(); } }}
                                 onDragOver={e => e.preventDefault()}
                                 onDrop={handleDrop}
                                 className="min-h-[48px] max-h-[120px] bg-transparent border-none text-white placeholder:text-white/40 resize-none text-base focus-visible:ring-0 focus-visible:ring-offset-0 p-0"
@@ -391,8 +386,8 @@ export default function Img2Generation() {
                     totalCount={filteredJobs.length}
                     overscan={400}
                     listClassName="grid gap-4 grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 max-w-[1800px] mx-auto"
-                    itemContent={(index) => {
-                        const job = filteredJobs[index]
+                    itemContent={(_index) => {
+                        const job = filteredJobs[_index]
                         if (!job) return null
                         const currentIndex = cardImageIndexes[job.id] || 0
                         const cover = job.output_urls?.[currentIndex] || job.output_urls?.[0]
@@ -448,7 +443,7 @@ export default function Img2Generation() {
                                                     </span>
                                                     <span className="text-[11px] font-semibold text-red-300 tracking-widest drop-shadow-md">重试</span>
                                                     {job.error_message && (
-                                                        <span className="text-[10px] text-red-300/60 px-3 text-center leading-tight max-w-[180px]">{job.error_message}</span>
+                                                        <span className="text-[10px] text-red-300/60 px-3 text-center leading-tight max-w-[180px]" title={job.error_message}>{job.error_message}</span>
                                                     )}
                                                 </div>
                                             </button>
@@ -457,7 +452,7 @@ export default function Img2Generation() {
                                         <button
                                             type="button"
                                             className={cn(
-                                                "absolute top-3 left-3 h-7 w-7 rounded-full border border-white/20 flex items-center justify-center text-xs font-bold transition-all z-10",
+                                                "absolute top-3 left-3 h-7 w-7 rounded-full border border-white/20 flex items-center justify-center text-xs font-bold transition-all z-30",
                                                 selected ? "bg-foreground text-background scale-110" : "bg-black/40 text-white/70 opacity-0 group-hover:opacity-100 hover:scale-110",
                                                 !canSelect && "opacity-0 pointer-events-none"
                                             )}
@@ -466,17 +461,28 @@ export default function Img2Generation() {
 
                                         <button
                                             type="button"
-                                            className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-all duration-300 hover:scale-110 z-10"
-                                            onClick={(e) => { e.stopPropagation(); handleDownload(originalCover, currentIndex) }}
-                                            disabled={!originalCover}
+                                            className="absolute top-3 right-3 opacity-60 hover:opacity-100 transition-all duration-300 hover:scale-110 z-30"
+                                            onClick={(e) => { e.stopPropagation(); handleDelete(job.id) }}
                                         >
-                                            <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-black/50 border border-white/10 backdrop-blur">
-                                                <Download className="h-4 w-4 text-white" />
+                                            <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-black/50 border border-white/10 backdrop-blur hover:bg-red-500/30 hover:border-red-500/50 transition-colors">
+                                                <Trash2 className="h-4 w-4 text-white/80 hover:text-red-300" />
                                             </span>
                                         </button>
 
+                                        {originalCover && (
+                                            <button
+                                                type="button"
+                                                className="absolute top-3 right-14 opacity-60 hover:opacity-100 transition-all duration-300 hover:scale-110 z-30"
+                                                onClick={(e) => { e.stopPropagation(); handleDownload(originalCover, currentIndex) }}
+                                            >
+                                                <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-black/50 border border-white/10 backdrop-blur">
+                                                    <Download className="h-4 w-4 text-white" />
+                                                </span>
+                                            </button>
+                                        )}
+
                                         {count > 1 && (
-                                            <span className="absolute bottom-3 right-3 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-black/60 backdrop-blur-md text-white border border-white/10 z-10 pointer-events-none">
+                                            <span className="absolute bottom-3 right-3 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-black/60 backdrop-blur-md text-white border border-white/10 z-30 pointer-events-none">
                                                 {currentIndex + 1} / {count} 张
                                             </span>
                                         )}
@@ -496,9 +502,13 @@ export default function Img2Generation() {
                                                 <Badge className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 backdrop-blur-md font-medium px-2 py-0.5 pointer-events-none shadow-sm">完成</Badge>
                                             ) : (
                                                 <div className="flex items-center gap-2">
-                                                    <Badge className="bg-red-500/20 text-red-400 border border-red-500/30 backdrop-blur-md font-medium px-2 py-0.5 pointer-events-none shadow-sm">失败</Badge>
+                                                    {job.error_message?.includes('审核') ? (
+                                                        <Badge className="bg-amber-500/20 text-amber-400 border border-amber-500/30 backdrop-blur-md font-medium px-2 py-0.5 pointer-events-none shadow-sm">审核拦截</Badge>
+                                                    ) : (
+                                                        <Badge className="bg-red-500/20 text-red-400 border border-red-500/30 backdrop-blur-md font-medium px-2 py-0.5 pointer-events-none shadow-sm">失败</Badge>
+                                                    )}
                                                     {job.error_message && (
-                                                        <span className="text-[10px] text-red-300/70 max-w-[120px] truncate">{job.error_message}</span>
+                                                        <span className="text-[10px] text-red-300/70 max-w-[120px] truncate" title={job.error_message}>{job.error_message}</span>
                                                     )}
                                                 </div>
                                             )}

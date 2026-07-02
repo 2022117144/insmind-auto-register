@@ -22,7 +22,7 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     };
 
     const t = (key: TranslationKey): string => {
-        return translations[language][key] || translations['en'][key] || key;
+        return (translations as any)[language][key] || (translations as any)['en'][key] || key;
     };
 
     useEffect(() => {

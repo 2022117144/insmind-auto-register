@@ -733,6 +733,7 @@ export default function ContentGeneration() {
                             onFocus={() => setIsFocused(true)}
                             onBlur={() => setIsFocused(false)}
                             onPaste={handlePaste}
+                            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && prompt.trim()) { e.preventDefault(); handleGenerate(); } }}
                             placeholder="请描述你想生成的内容，或在此处粘贴图片..."
                             className="min-h-[100px] resize-none bg-white/5 border-transparent outline-none focus-visible:ring-1 focus-visible:ring-emerald-500/50 rounded-2xl text-[15px] leading-relaxed px-4 py-3 placeholder:text-muted-foreground/60 focus:bg-white/10 transition-all"
                         />
