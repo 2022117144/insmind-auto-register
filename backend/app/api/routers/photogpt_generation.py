@@ -25,7 +25,6 @@ from app.core import get_db, settings
 from app.core.database import async_session_factory
 from app.models.photogpt_job import PhotoGPTJob
 from app.models.photogpt_account import PhotoGPTAccount
-from app.services.oss_upload import upload_to_oss
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -110,10 +109,13 @@ class PhotoGPTGenerateResponse(BaseModel):
 # ── Sign & Helpers ──────────────────────────────────────────────
 
 
-async def _upload_data_urls(data_urls: list[str]) -> list[str]:
-    """将 data URL 上传到 OSS，返回 CDN URL 列表（非 data URL 的原样返回）"""
+async def _upload_data_urls(data_urls: list[str], nc_token: str = "") -> list[str]:
+    """将 data URL 上传到 PhotoGPT CDN，返回 CDN 相对路径（用于 input_urls）"""
     if not data_urls:
         return []
+    if not nc_token:
+        return data_urls  # 没有 nc_token 无法上传
+
     result: list[str] = []
     for url in data_urls:
         if not url or not url.startswith("data:image/"):
@@ -121,18 +123,50 @@ async def _upload_data_urls(data_urls: list[str]) -> list[str]:
             continue
         try:
             mime = url.split(";")[0].split(":")[1]
+            ext = mime.split("/")[-1]
+            if ext not in ("jpeg", "jpg", "png", "webp"):
+                ext = "jpeg"
             raw_b64 = url.split(",", 1)[1]
             img_bytes = base64.b64decode(raw_b64)
-            cdn_url = await upload_to_oss(img_bytes, mime)
-            if cdn_url:
-                result.append(cdn_url)
-                logger.info(f"📤 PhotoGPT data URL → OSS: {cdn_url[:60]}...")
-            else:
-                logger.warning("⚠️ OSS 上传失败，保留 data URL")
-                result.append(url)
+
+            import httpx
+            p = _get_proxy()
+            proxy_str = str(p.get("https") or p.get("http")) if p else None
+            cookies = {"nc_token": nc_token}
+
+            async with httpx.AsyncClient(proxy=proxy_str, timeout=20.0) as c:
+                # 1. 拿 presigned OSS URL
+                import uuid
+                filename = f"{uuid.uuid4().hex[:12]}.{ext}"
+                r = await c.post(
+                    f"{PHOTOGPT_API}/api/v1/get-sign-url",
+                    json={"biz": "user_upload", "files": [{"filename": filename}]},
+                    cookies=cookies,
+                    headers={"Content-Type": "application/json", "Origin": PHOTOGPT_API, "Referer": f"{PHOTOGPT_API}/ai-models/gpt-image-2"},
+                )
+                if r.status_code != 200:
+                    raise Exception(f"get-sign-url failed: {r.status_code}")
+                sign_data = r.json()
+                if sign_data.get("code") != 100000:
+                    raise Exception(f"get-sign-url api error: {sign_data.get('message')}")
+                upload_url = sign_data["data"][0]["url"]
+                saved_filename = sign_data["data"][0]["filename"]
+
+                # 2. PUT 上传到 OSS
+                r2 = await c.put(upload_url, content=img_bytes, headers={"Content-Type": mime})
+                if r2.status_code != 200:
+                    raise Exception(f"OSS upload failed: {r2.status_code}")
+
+                # 3. 构建 CDN 相对路径（input_urls 需要这个格式）
+                from datetime import date
+                today = date.today().strftime("%Y/%m/%d")
+                cdn_path = f"/photogpt/user-upload/{today}/{saved_filename}"
+                result.append(cdn_path)
+                logger.info(f"📤 PhotoGPT CDN upload OK: {cdn_path}")
+
         except Exception as e:
-            logger.warning(f"⚠️ data URL 上传异常: {e}")
-            result.append(url)
+            logger.warning(f"⚠️ PhotoGPT 图片上传失败: {e}")
+            result.append(url)  # 回退 data URL
     return result
 
 
@@ -342,7 +376,16 @@ async def photogpt_generate(req: PhotoGPTGenerateRequest, db: AsyncSession = Dep
 
     try:
         proxy = _get_proxy()
-        async with requests.AsyncSession(impersonate="chrome124", timeout=15, proxies=proxy) as c:
+        # 覆盖系统 proxy 环境变量（Docker 遗留的 host.docker.internal 不可达）
+        if proxy:
+            proxy_str = str(proxy.get("https") or proxy.get("http"))
+            os.environ["HTTP_PROXY"] = proxy_str
+            os.environ["HTTPS_PROXY"] = proxy_str
+        else:
+            os.environ.pop("HTTP_PROXY", None)
+            os.environ.pop("HTTPS_PROXY", None)
+        os.environ.setdefault("CURL_SSL_BACKEND", "schannel")
+        async with requests.AsyncSession(impersonate="chrome124", timeout=30, proxies=proxy) as c:
             # 优先使用数据库里存的 access_token（= nc_token），避免重复登录冲掉 token
             nc_token = account.access_token or ""
             logger.warning(f"STORED_ACCESS_TOKEN_CHECK: nc_token={'Y' if nc_token else 'N'}, len={len(nc_token) if nc_token else 0}")
@@ -390,7 +433,7 @@ async def photogpt_generate(req: PhotoGPTGenerateRequest, db: AsyncSession = Dep
             t = int(time.time())
 
             # 上传 data URL 图片到 OSS，换取 CDN URL（图生图支持）
-            input_urls = await _upload_data_urls(req.input_urls or [])
+            input_urls = await _upload_data_urls(req.input_urls or [], nc_token)
 
             handle_params = {
                 "input_urls": input_urls,
