@@ -127,7 +127,8 @@ async def sync_account_to_pool(
         async with httpx.AsyncClient(timeout=5.0) as c:
             pool = await c.get(f"{INSMIND2API_URL}/api/accounts")
             if pool.status_code == 200:
-                pool_accounts = pool.json().get("accounts", [])
+                data = pool.json()
+                pool_accounts = data if isinstance(data, list) else data.get("accounts", [])
                 if not any(a.get("email") == email for a in pool_accounts):
                     await c.post(f"{INSMIND2API_URL}/api/accounts", json={
                         "email": email, "token": token,

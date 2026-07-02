@@ -340,7 +340,8 @@ async def add_to_pool(email: str, token: str, userId: str, refresh_token: str = 
     """把注册结果写入 insmind2api 账号池"""
     async with httpx.AsyncClient(timeout=10.0) as c:
         r = await c.get(f"{INSMIND2API_URL}/api/accounts")
-        cur = r.json().get("accounts", []) if r.status_code == 200 else []
+        data = r.json()
+        cur = data if isinstance(data, list) else data.get("accounts", []) if r.status_code == 200 else []
     async with httpx.AsyncClient(timeout=10.0) as c:
         entry = {"email": email, "token": token, "userId": userId or "0", "credits": 0, "refreshToken": refresh_token}
         if org_id:
@@ -348,7 +349,7 @@ async def add_to_pool(email: str, token: str, userId: str, refresh_token: str = 
         r = await c.post(f"{INSMIND2API_URL}/api/accounts/sync",
             json={"accounts": cur + [entry]})
         if r.status_code == 200:
-            logger.info(f"已加入池，共 {r.json()['total']} 个")
+            logger.info(f"已加入池，同步成功")
             return True
     return False
 

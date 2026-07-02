@@ -242,12 +242,24 @@ async def delete_insmind_account(
     account = result.scalar_one_or_none()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    email = account.email
     await db.delete(account)
     await db.commit()
+    # 同步从 insmind2api 池删除
+    try:
+        import httpx as _httpx
+        async with _httpx.AsyncClient(timeout=5.0) as _c:
+            pr = await _c.get("http://127.0.0.1:5105/api/accounts")
+            if pr.status_code == 200:
+                rem = [a for a in pr.json().get("accounts", []) if a.get("email") != email]
+                await _c.post("http://127.0.0.1:5105/api/accounts/sync", json={"accounts": rem})
+                logger.info(f"🗑️ 已从 insmind2api 池删除 {email} (剩 {len(rem)} 个)")
+    except Exception as sync_err:
+        logger.warning(f"⚠️ 同步 insmind2api 池失败: {sync_err}")
     return {"message": "Account deleted", "id": account_id}
 
 
-# ============ Token 管理 ============
+    # ============ Token 管理 ============
 
 
 @router.patch("/insmind/accounts/{email}/token")
@@ -327,16 +339,19 @@ async def auto_register_insmind_account(db: AsyncSession = Depends(get_db)):
     python_cmd = "E:/视频生成/dreamina-auto-register-main/backend/.venv/Scripts/python.exe"
     
     logger.info("开始自动注册 insMind 账号...")
-    
-    proc = await asyncio.create_subprocess_exec(
-        python_cmd, script_path, "--auto-add",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        cwd=os.path.dirname(script_path),
-    )
 
-    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=180)
-    output = stdout.decode("utf-8", errors="replace") if stdout else ""
+    loop = asyncio.get_event_loop()
+    proc = await loop.run_in_executor(
+        None,
+        lambda: subprocess.Popen(
+            [python_cmd, script_path, "--auto-add"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            cwd=os.path.dirname(script_path),
+        )
+    )
+    stdout_bytes = await loop.run_in_executor(None, lambda: proc.communicate(timeout=180))
+    output = stdout_bytes[0].decode("utf-8", errors="replace") if stdout_bytes[0] else ""
 
     # 解析输出中的 RESULT JSON
     result = {"success": False, "error": "脚本无输出"}
@@ -431,15 +446,19 @@ async def batch_auto_register_insmind(
 
     async def _run_one() -> dict:
         async with semaphore:
-            proc = await asyncio.create_subprocess_exec(
-                python_cmd, script_path, "--auto-add",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                cwd=os.path.dirname(script_path),
+            loop = asyncio.get_event_loop()
+            proc = await loop.run_in_executor(
+                None,
+                lambda: subprocess.Popen(
+                    [python_cmd, script_path, "--auto-add"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    cwd=os.path.dirname(script_path),
+                )
             )
             try:
-                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=180)
-                output = stdout.decode("utf-8", errors="replace") if stdout else ""
+                stdout_bytes = await loop.run_in_executor(None, lambda: proc.communicate(timeout=180))
+                output = stdout_bytes[0].decode("utf-8", errors="replace") if stdout_bytes[0] else ""
                 result = {"success": False, "error": "No output"}
                 json_match = re_mod.search(r'\{[^{}]*"success"[^{}]*\}', output)
                 if json_match:

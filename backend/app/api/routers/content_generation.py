@@ -183,13 +183,24 @@ async def _release_insmind_account(db: AsyncSession, acct) -> None:
 
 
 async def _delete_insmind_account(db: AsyncSession, acct) -> None:
-    """从 DB 删除账号（不再需要同步 insmind2api 池）"""
+    """从 DB 和 insmind2api 池删除账号"""
     try:
         await db.delete(acct)
         await db.commit()
         logger.info(f"🗑️ 已从 DB 删除 {acct.email}")
     except Exception as del_err:
         logger.warning(f"⚠️ 删除账号异常: {del_err}")
+    # 同步从 insmind2api 池删除
+    try:
+        import httpx as _httpx
+        async with _httpx.AsyncClient(timeout=5.0) as _c:
+            pr = await _c.get("http://127.0.0.1:5105/api/accounts")
+            if pr.status_code == 200:
+                rem = [a for a in pr.json().get("accounts", []) if a.get("email") != acct.email]
+                await _c.post("http://127.0.0.1:5105/api/accounts/sync", json={"accounts": rem})
+                logger.info(f"🗑️ 已从 insmind2api 池删除 {acct.email} (剩 {len(rem)} 个)")
+    except Exception as sync_err:
+        logger.warning(f"⚠️ 同步 insmind2api 池失败: {sync_err}")
 
 
 def _compress_image_data_url(data_url: str, max_size: int = 2048) -> str:
@@ -253,34 +264,15 @@ async def get_generation_models(
         if region
         else await _resolve_default_generation_region(db)
     )
-    token = f"{resolved_region}-placeholder" if resolved_region != "cn" else "placeholder"
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            response = await client.get(
-                f"{settings.jimeng_api_url}/v1/models",
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            response.raise_for_status()
-            payload = response.json()
-        except Exception:
-            from app.models.insmind_account import InsMindAccount
-            insmind_count = (await db.execute(select(func.count(InsMindAccount.id)))).scalar() or 0
-            if insmind_count > 0:
-                payload = {
-                    "data": [
-                        {"id": "gpt-image-2", "category": "image"},
-                        {"id": "Pixverse-V6.0", "category": "video"},
-                        {"id": "Kling-3.0", "category": "video"},
-                        {"id": "Wan-2.7", "category": "video"},
-                        {"id": "Seedance-2.0", "category": "video"},
-                        {"id": "Seedance-2.0-Mini", "category": "video"},
-                        {"id": "VEO-3.1", "category": "video"},
-                    ],
-                    "meta": {"country": "insmind", "profile": "insmind", "model_set": "insmind"},
-                }
-            else:
-                raise
+    payload = {
+        "data": [
+            {"id": "gpt-image-2", "category": "image"},
+            {"id": "Pixverse-V6.0", "category": "video"},
+            {"id": "Seedance-2.0-Mini", "category": "video"},
+        ],
+        "meta": {"country": resolved_region, "profile": resolved_region, "model_set": resolved_region},
+    }
 
     data = payload.get("data") or []
     image_models = [

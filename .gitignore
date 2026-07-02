@@ -72,3 +72,7 @@ dreamina2api/LICENSE
 
 # ===== jimeng_service 排除 =====
 backend/jimeng_service/README.CN.md
+_test_video.json
+_test_req.json
+backend/start_persistent.bat
+register_v3.py
