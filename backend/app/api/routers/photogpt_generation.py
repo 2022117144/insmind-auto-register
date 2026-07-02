@@ -263,8 +263,9 @@ async def _auto_disable_account(account: PhotoGPTAccount, db: AsyncSession, reas
 # ── Polling ─────────────────────────────────────────────────────
 
 async def _poll_generation(nc_token: str, project_id: str, job_id: int):
-    """Backgroup poll using nc_token cookie (not Bearer token, which PhotoGPT rejects)"""
+    """Background poll — 强化的审核拦截检测"""
     cookies = {"nc_token": nc_token}
+    no_url_count = 0  # 连续无图片 URL 的轮询次数
     for i in range(60):
         await asyncio.sleep(3)
         try:
@@ -286,36 +287,46 @@ async def _poll_generation(nc_token: str, project_id: str, job_id: int):
                 logger.warning(f"POLL_RAW[{i+1}] status=200 body={raw_text[:500]}")
                 data = r.json()
                 code = data.get("code")
+
+                # ── 100014: project_id 不存在（审核删除 / 临时不可用） ──
                 if code == 100014:
-                    # PhotoGPT 临时不可用，继续轮询（不删除账号）
+                    no_url_count += 1
+                    if no_url_count >= 3:
+                        # 连续 3 次 100014 = 项目已被审核删除
+                        async with async_session_factory() as session:
+                            await session.execute(
+                                update(PhotoGPTJob).where(PhotoGPTJob.id == job_id)
+                                .values(status="failed", error_message="图片被审核拦截，项目已被删除")
+                            )
+                            await session.commit()
+                        return
                     continue
+
                 if code != 100000:
                     continue
+
                 result = data.get("data", {})
                 status_val = result.get("status", 0)
                 results_list = result.get("results", [])
 
-                # Success: status=2 or has result_content/url
-                if status_val == 2 or (results_list and (results_list[0].get("result_content") or results_list[0].get("url"))):
-                    output_urls = []
-                    for img in results_list:
-                        url = img.get("url") or img.get("result_content", "")
-                        if url:
+                # ── 提取有效图片 URL ──
+                output_urls: list[str] = []
+                has_audit_text = False
+                audit_text = ""
+                for img in results_list:
+                    url = img.get("url") or img.get("result_content", "")
+                    if url:
+                        if url.startswith(("http://", "https://", "/", "data:")):
                             if url.startswith("/"):
                                 url = f"{PHOTOGPT_CDN}{url}"
                             output_urls.append(url)
-                    if not output_urls:
-                        # PhotoGPT 返回 status=1 但无图片 URL = 被审核拦截
-                        if status_val == 1:
-                            async with async_session_factory() as session:
-                                await session.execute(
-                                    update(PhotoGPTJob).where(PhotoGPTJob.id == job_id)
-                                    .values(status="failed", error_message="图片被审核拦截，未生成实际图片")
-                                )
-                                await session.commit()
-                            return
-                        # 空结果继续轮询
-                        continue
+                        else:
+                            # result_content 是审核文本而非图片 URL
+                            has_audit_text = True
+                            audit_text = url
+
+                # ✅ SUCCESS: 拿到图片 URL
+                if output_urls:
                     async with async_session_factory() as session:
                         await session.execute(
                             update(PhotoGPTJob).where(PhotoGPTJob.id == job_id)
@@ -325,7 +336,28 @@ async def _poll_generation(nc_token: str, project_id: str, job_id: int):
                     logger.info(f"PhotoGPT job {job_id} completed: {output_urls}")
                     return
 
-                elif status_val == 3:
+                # 🔴 AUDIT: result_content 返回审核文本
+                if has_audit_text:
+                    async with async_session_factory() as session:
+                        await session.execute(
+                            update(PhotoGPTJob).where(PhotoGPTJob.id == job_id)
+                            .values(status="failed", error_message=f"图片被审核拦截: {audit_text[:200]}")
+                        )
+                        await session.commit()
+                    return
+
+                # 🔴 AUDIT: status≥1 但无任何有效 URL（含 status=1=完成无图, status=2=理论上成功但空结果）
+                if status_val >= 1 and status_val != 3:
+                    async with async_session_factory() as session:
+                        await session.execute(
+                            update(PhotoGPTJob).where(PhotoGPTJob.id == job_id)
+                            .values(status="failed", error_message="图片被审核拦截，未生成实际图片")
+                        )
+                        await session.commit()
+                    return
+
+                # 🔴 EXPLICIT FAILURE: status=3
+                if status_val == 3:
                     error_msg = result.get("error", "生成失败")
                     async with async_session_factory() as session:
                         await session.execute(
@@ -335,10 +367,21 @@ async def _poll_generation(nc_token: str, project_id: str, job_id: int):
                         await session.commit()
                     return
 
+                # ⏳ STILL PROCESSING: status=0 → 累计无结果次数
+                no_url_count += 1
+                if no_url_count >= 15:  # 45s 还在 status=0 → 可疑
+                    async with async_session_factory() as session:
+                        await session.execute(
+                            update(PhotoGPTJob).where(PhotoGPTJob.id == job_id)
+                            .values(status="failed", error_message="生成超时，疑似被审核拦截")
+                        )
+                        await session.commit()
+                    return
+
         except Exception as e:
             logger.debug(f"Poll {i+1} error for {project_id}: {e}")
 
-    # Timout after 3min
+    # ⏱ Full timeout after 3min
     async with async_session_factory() as session:
         await session.execute(
             update(PhotoGPTJob).where(PhotoGPTJob.id == job_id)
@@ -539,6 +582,12 @@ async def photogpt_delete_job(job_id: int, db: AsyncSession = Depends(get_db)):
     job = (await db.execute(select(PhotoGPTJob).where(PhotoGPTJob.id == job_id))).scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404)
+    # 生成中的任务要释放账号锁
+    if job.status == "submitting" and job.account_id:
+        await db.execute(
+            update(PhotoGPTAccount).where(PhotoGPTAccount.id == job.account_id)
+            .values(gen_locked_until=None)
+        )
     await db.delete(job)
     await db.commit()
     return {"message": "已删除"}
@@ -549,6 +598,16 @@ async def photogpt_batch_delete_jobs(body: dict, db: AsyncSession = Depends(get_
     ids = body.get("ids", [])
     if not ids:
         raise HTTPException(status_code=400)
+    # 释放 submitting 任务的账号锁
+    submitting_jobs = (await db.execute(
+        select(PhotoGPTJob).where(PhotoGPTJob.id.in_(ids), PhotoGPTJob.status == "submitting")
+    )).scalars().all()
+    for j in submitting_jobs:
+        if j.account_id:
+            await db.execute(
+                update(PhotoGPTAccount).where(PhotoGPTAccount.id == j.account_id)
+                .values(gen_locked_until=None)
+            )
     r = await db.execute(delete(PhotoGPTJob).where(PhotoGPTJob.id.in_(ids)))
     await db.commit()
     return {"deleted": r.rowcount}

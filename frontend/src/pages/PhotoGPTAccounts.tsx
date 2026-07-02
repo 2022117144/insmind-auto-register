@@ -341,7 +341,7 @@ export default function PhotoGPTAccounts() {
                                         </Badge>
                                     </TableCell>
                                     <TableCell className="text-muted-foreground text-sm">
-                                        {account.created_at ? new Date(account.created_at).toLocaleString() : '—'}
+                                        {account.created_at ? new Date(account.created_at + 'Z').toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '—'}
                                     </TableCell>
                                     <TableCell className="text-right">
                                         <DropdownMenu>
