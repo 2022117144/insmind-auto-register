@@ -363,7 +363,7 @@ async def generate_image_to_video(
     user_id: str,
     org_id: str,
     credits: int = 0,
-    image_data_url: str,
+    image_data_urls: list[str],
     prompt: str,
     model: str = "Pixverse-V6.0",
     duration: int = 10,
@@ -372,20 +372,29 @@ async def generate_image_to_video(
 ) -> InsMindResult:
     """
     图生视频：先压缩 → 上传 OSS(CDN) → 调 generations-image 端点
+    支持多图（首帧+尾帧），逐张压缩+上传
     """
-    # 1. 压缩图片
-    img_url = _compress_image(image_data_url)
-
-    # 2. 如果是 data URL，上传到 OSS 拿 CDN URL
-    if img_url.startswith("data:image/"):
-        cdn_url = await _upload_to_oss(
-            img_url, email, token, user_id, org_id
-        )
-        if cdn_url:
-            img_url = cdn_url
-            logger.info(f"📤 已上传到 CDN: {cdn_url[:60]}...")
+    # 1. 压缩+上传每张图片
+    cdn_urls: list[str] = []
+    for data_url in image_data_urls:
+        if not data_url:
+            continue
+        img_url = _compress_image(data_url)
+        if img_url.startswith("data:image/"):
+            cdn_url = await _upload_to_oss(
+                img_url, email, token, user_id, org_id
+            )
+            if cdn_url:
+                cdn_urls.append(cdn_url)
+                logger.info(f"📤 已上传到 CDN: {cdn_url[:60]}...")
+            else:
+                logger.warning("⚠️ OSS 上传失败，回退到 data URL（可能无法生成）")
+                cdn_urls.append(img_url)
         else:
-            logger.warning("⚠️ OSS 上传失败，回退到 data URL（可能无法生成）")
+            cdn_urls.append(img_url)
+
+    if not cdn_urls:
+        return InsMindResult(code="failed", message="没有可用的图片")
 
     await sync_account_to_pool(email, token, user_id, credits, org_id)
 
@@ -399,7 +408,7 @@ async def generate_image_to_video(
                     "duration": duration,
                     "resolution": resolution,
                     "aspect_ratio": aspect_ratio,
-                    "image_url": img_url,
+                    "image_urls": cdn_urls,
                     "account_email": email,
                 },
             )
@@ -454,7 +463,7 @@ async def generate_video(
             email=email, token=token, user_id=user_id, org_id=org_id,
             credits=credits, prompt=prompt, model=model,
             duration=duration, resolution=resolution,
-            aspect_ratio=aspect_ratio, image_data_url=input_images[0],
+            aspect_ratio=aspect_ratio, image_data_urls=input_images,
         )
     return await generate_text_to_video(
         email=email, token=token, user_id=user_id, org_id=org_id,

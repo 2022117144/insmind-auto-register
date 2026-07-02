@@ -588,12 +588,22 @@ router.post('/v1/videos/generations', async (ctx) => {
 
 // ============ Image-to-Video Generation (with conversation + confirmation) ============
 
-router.post('/v1/videos/generations-image', async (ctx) => {
-    const { prompt, model = 'Pixverse-V6.0', duration = 10, resolution = '360P', aspect_ratio = '16:9', image_url, account_email } = ctx.request.body as any;
+function _guessMime(url: string): string {
+    return url.endsWith('.webp') ? 'image/webp'
+        : url.endsWith('.jpg') || url.endsWith('.jpeg') ? 'image/jpeg'
+        : url.endsWith('.gif') ? 'image/gif'
+        : url.endsWith('.png') ? 'image/png'
+        : 'image/jpeg';
+}
 
-    if (!image_url) {
+router.post('/v1/videos/generations-image', async (ctx) => {
+    const { prompt, model = 'Pixverse-V6.0', duration = 10, resolution = '360P', aspect_ratio = '16:9', image_url, image_urls, account_email } = ctx.request.body as any;
+
+    // Support both single image_url and array image_urls
+    const inputUrls: string[] = image_urls || (image_url ? [image_url] : []);
+    if (inputUrls.length === 0) {
         ctx.status = 400;
-        ctx.body = { error: 'image_url is required for image-to-video generation' };
+        ctx.body = { error: 'image_url or image_urls is required for image-to-video generation' };
         return;
     }
 
@@ -619,28 +629,43 @@ router.post('/v1/videos/generations-image', async (ctx) => {
     const sceneCode = SCENE_CODE_MAP[model] || 'Pixversev60';
     const taskId = `insmind-img-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
 
-    // Step 1: Upload image to OSS
-    let cdnUrl = image_url;
-    if (typeof image_url === 'string' && image_url.startsWith('data:')) {
-        console.log(`🖼️ Uploading data URL to OSS... (${(image_url.length / 1024).toFixed(0)}KB)`);
-        try {
-            cdnUrl = await uploadMedia(account, image_url);
-            console.log(`🖼️ CDN URL: ${cdnUrl}`);
-        } catch (uploadErr: any) {
-            console.log(`⚠️ Upload failed, falling back to data URL: ${uploadErr.message}`);
-            cdnUrl = image_url;
+    // Step 1: Upload each data URL to OSS
+    const cdnUrls: string[] = [];
+    for (let i = 0; i < inputUrls.length; i++) {
+        const url = inputUrls[i];
+        let cdnUrl = url;
+        if (typeof url === 'string' && url.startsWith('data:')) {
+            console.log(`🖼️ [${i + 1}/${inputUrls.length}] Uploading data URL to OSS... (${(url.length / 1024).toFixed(0)}KB)`);
+            try {
+                cdnUrl = await uploadMedia(account, url);
+                console.log(`🖼️ [${i + 1}/${inputUrls.length}] CDN URL: ${cdnUrl}`);
+            } catch (uploadErr: any) {
+                console.log(`⚠️ [${i + 1}/${inputUrls.length}] Upload failed, falling back to data URL: ${uploadErr.message}`);
+                cdnUrl = url;
+            }
         }
+        cdnUrls.push(cdnUrl);
     }
 
-    const mimeGuess = cdnUrl.endsWith('.webp') ? 'image/webp' : cdnUrl.endsWith('.jpg') || cdnUrl.endsWith('.jpeg') ? 'image/jpeg' : cdnUrl.endsWith('.gif') ? 'image/gif' : 'image/png';
+    // Step 2: Build SSE payload — all images in BOTH prompt (as media) and attachments
+    const mediaPromptItems = cdnUrls.map((url, i) => ({
+        type: 'media' as const,
+        url,
+        mime: _guessMime(url),
+        name: `${i + 1}.${_guessMime(url).split('/')[1]}`,
+    }));
+    const attachmentItems = cdnUrls.map((url, i) => ({
+        url,
+        mime_type: _guessMime(url),
+        name: `input.${i + 1}.${_guessMime(url).split('/')[1]}`,
+    }));
 
-    // Step 2: Build SSE payload — image in BOTH prompt (as media) and attachments
     const convPayload = {
         content: {
             type: 'plain',
             scene_code: sceneCode,
             prompt: [
-                { type: 'media', url: cdnUrl, mime: mimeGuess, name: '1.' + mimeGuess.split('/')[1] },
+                ...mediaPromptItems,
                 { type: 'text', content: prompt || '' }
             ],
             parameters: {
@@ -658,9 +683,9 @@ router.post('/v1/videos/generations-image', async (ctx) => {
         local_thread_id: taskId,
         local_message_id: `${taskId}-msg`,
         thread_id: '',
-        attachments: [{ url: cdnUrl, mime_type: mimeGuess, name: 'input.' + mimeGuess.split('/')[1] }],
+        attachments: attachmentItems,
         extra: {
-            prompt_suffix: '',
+            prompt_suffix: `Using video tool: ${model},Resolution: ${resolution},Duration: ${duration} seconds`,
             enable_websearch: false,
         },
     };
@@ -678,7 +703,7 @@ router.post('/v1/videos/generations-image', async (ctx) => {
         'Cookie': account.orgId ? `token.prod=${account.token}; token.org_id.prod=${account.orgId}` : `token.prod=${account.token}`,
     };
 
-    // Step 3: First SSE — send image and prompt, read full response like text-to-video
+    // Step 3: First SSE — send image(s) and prompt, read full response like text-to-video
     let finalRawData: string;
     try {
         finalRawData = await sseFetch('https://sse.insmind.com/api/ai-agent/v1/thread/completion', JSON.stringify(convPayload), sseHeaders, 300000);
@@ -702,8 +727,9 @@ router.post('/v1/videos/generations-image', async (ctx) => {
             duration, resolution, aspect_ratio,
             account: account.email,
             video_url: videoUrl,
-            cdn_url: cdnUrl,
-            image_url: image_url,
+            cdn_urls: cdnUrls,
+            image_url: image_url || (image_urls ? image_urls[0] : undefined),
+            image_count: inputUrls.length,
             conversation: 'single-turn',
             response: rawData,
             poll_interval_seconds: 15,
@@ -721,7 +747,7 @@ router.post('/v1/videos/generations-image', async (ctx) => {
         confirmPayload.thread_id = threadId;
         confirmPayload.local_message_id = `${taskId}-confirm`;
         confirmPayload.content.prompt = [
-            { type: 'text', content: `Yes, generate the video now. ${prompt}` }
+            { type: 'text', content: `Yes, use ${model} to generate the video now. ${prompt}` }
         ];
 
         try {
@@ -734,10 +760,32 @@ router.post('/v1/videos/generations-image', async (ctx) => {
         }
     }
 
-    // Step 5: Try to extract video URL or poll records
+    // Step 6: Detect if 2nd SSE is still a function_call (Seedance multi-turn pattern)
+    if (rawData && (rawData.includes('"type":"function_call"') || rawData.includes('"type": "function_call"')) && threadId) {
+        console.log(`💬 Third confirmation on thread ${threadId} (Seedance multi-turn)`);
+        const thirdPayload = JSON.parse(JSON.stringify(convPayload));
+        thirdPayload.thread_id = threadId;
+        thirdPayload.local_message_id = `${taskId}-third`;
+        thirdPayload.content.prompt = [
+            { type: 'text', content: `Yes, execute ${model} now. ${prompt}` }
+        ];
+        try {
+            const thirdResult = await sseFetch(
+                'https://sse.insmind.com/api/ai-agent/v1/thread/completion',
+                JSON.stringify(thirdPayload), sseHeaders, 300000
+            );
+            console.log(`📡 SSE response (3rd): ${thirdResult.length} chars`);
+            console.log(`📄 SSE snippet (3rd): ${thirdResult.substring(0, 500)}`);
+            if (thirdResult.length > 0) rawData = thirdResult;
+        } catch (thirdErr: any) {
+            console.error(`❌ SSE third confirmation failed: ${thirdErr.message}`);
+        }
+    }
+
+    // Step 7: Try to extract video URL or poll records
     try {
         let videoUrl: string | null = null;
-        // Check BOTH finalRawData (1st SSE) and rawData (2nd SSE) for mp4 URLs
+        // Check BOTH finalRawData (1st SSE) and rawData (2nd/3rd SSE) for mp4 URLs
         for (const src of [rawData, finalRawData].filter(Boolean)) {
             const m1 = src.match(/https:\/\/[^\"\\, ]+\.mp4/);
             const m2 = src.match(/https?:\\\/\\\/[^\"\\, ]+\.mp4/);
@@ -789,9 +837,10 @@ router.post('/v1/videos/generations-image', async (ctx) => {
             duration, resolution, aspect_ratio,
             account: account.email,
             video_url: videoUrl,
-            cdn_url: cdnUrl,
-            image_url: image_url,
-            conversation: 'two-turn',
+            cdn_urls: cdnUrls,
+            image_url: image_url || (image_urls ? image_urls[0] : undefined),
+            image_count: inputUrls.length,
+            conversation: threadId && rawData.includes('function_call') ? 'three-turn' : 'two-turn',
             response: rawData,
             poll_interval_seconds: 15,
         };
