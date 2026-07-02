@@ -241,6 +241,70 @@ async def generate_text_to_video(
     return _parse_insmind_response(data)
 
 
+# ============ STS 凭证获取（供 shared oss_upload 使用） ============
+
+
+async def _get_account_sts() -> Optional[dict]:
+    """从数据库取一个 insMind 账号，获取 STS 上传凭证"""
+    from app.core.database import async_session_factory
+    from app.models.insmind_account import InsMindAccount
+    from sqlalchemy import select
+    try:
+        async with async_session_factory() as db:
+            acct = (await db.execute(
+                select(InsMindAccount)
+                .where(InsMindAccount.status == "active")
+                .where(InsMindAccount.token.isnot(None))
+                .where(InsMindAccount.token != "")
+                .limit(1)
+            )).scalar_one_or_none()
+            if not acct:
+                logger.warning("⚠️ 没有可用 insMind 账号获取 STS")
+                return None
+            token = acct.token or ""
+            org_id = acct.org_id or ""
+    except Exception as e:
+        logger.warning(f"⚠️ 取 insMind 账号失败: {e}")
+        return None
+
+    # 解码 JWT payload 拿 inner access_token
+    try:
+        padded = token + "=" * (4 - len(token) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded))
+        inner_token = payload.get("access_token", "")
+    except Exception as e:
+        logger.warning(f"⚠️ token 解码失败: {e}")
+        return None
+
+    if not inner_token:
+        return None
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as c:
+            sts_resp = await c.post(
+                "https://www.insmind.com/api/tb-dam/asset/upload/tokens",
+                json={"format": "jpg", "content_id": "", "dir": "", "device_id": "python-upload"},
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {inner_token}",
+                    "x-product-type": "INDIVIDUAL_FREE",
+                    "x-channel-id": "781",
+                    "x-business-id": "124",
+                    "x-device-id": "python-upload",
+                    "origin": "https://www.insmind.com",
+                    "referer": "https://www.insmind.com/creation",
+                    "Cookie": f"token.prod={token}; token.org_id.prod={org_id}",
+                },
+            )
+        if sts_resp.status_code != 200:
+            logger.warning(f"⚠️ STS 失败: {sts_resp.status_code}")
+            return None
+        return sts_resp.json()
+    except Exception as e:
+        logger.warning(f"⚠️ STS 请求异常: {e}")
+        return None
+
+
 # ============ OSS 上传（curl.exe） ============
 
 

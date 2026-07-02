@@ -183,18 +183,11 @@ async def _release_insmind_account(db: AsyncSession, acct) -> None:
 
 
 async def _delete_insmind_account(db: AsyncSession, acct) -> None:
-    """从 DB 和 insmind2api 池删除账号"""
-    import httpx as _httpx
+    """从 DB 删除账号（不再需要同步 insmind2api 池）"""
     try:
         await db.delete(acct)
         await db.commit()
         logger.info(f"🗑️ 已从 DB 删除 {acct.email}")
-        async with _httpx.AsyncClient(timeout=5.0) as _c:
-            pr = await _c.get("http://127.0.0.1:5105/api/accounts")
-            if pr.status_code == 200:
-                rem = [a for a in pr.json().get("accounts", []) if a.get("email") != acct.email]
-                await _c.post("http://127.0.0.1:5105/api/accounts/sync", json={"accounts": rem})
-                logger.info(f"🗑️ 已从 insmind2api 池删除 {acct.email} (剩 {len(rem)} 个)")
     except Exception as del_err:
         logger.warning(f"⚠️ 删除账号异常: {del_err}")
 

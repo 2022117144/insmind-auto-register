@@ -1,5 +1,6 @@
 """PhotoGPT Image Generation API Route"""
 import asyncio
+import base64
 import hmac
 import hashlib
 import json
@@ -24,6 +25,7 @@ from app.core import get_db, settings
 from app.core.database import async_session_factory
 from app.models.photogpt_job import PhotoGPTJob
 from app.models.photogpt_account import PhotoGPTAccount
+from app.services.oss_upload import upload_to_oss
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -106,6 +108,33 @@ class PhotoGPTGenerateResponse(BaseModel):
     error: str = ""
 
 # ── Sign & Helpers ──────────────────────────────────────────────
+
+
+async def _upload_data_urls(data_urls: list[str]) -> list[str]:
+    """将 data URL 上传到 OSS，返回 CDN URL 列表（非 data URL 的原样返回）"""
+    if not data_urls:
+        return []
+    result: list[str] = []
+    for url in data_urls:
+        if not url or not url.startswith("data:image/"):
+            result.append(url)
+            continue
+        try:
+            mime = url.split(";")[0].split(":")[1]
+            raw_b64 = url.split(",", 1)[1]
+            img_bytes = base64.b64decode(raw_b64)
+            cdn_url = await upload_to_oss(img_bytes, mime)
+            if cdn_url:
+                result.append(cdn_url)
+                logger.info(f"📤 PhotoGPT data URL → OSS: {cdn_url[:60]}...")
+            else:
+                logger.warning("⚠️ OSS 上传失败，保留 data URL")
+                result.append(url)
+        except Exception as e:
+            logger.warning(f"⚠️ data URL 上传异常: {e}")
+            result.append(url)
+    return result
+
 
 def _compute_sign(params: dict, key: str) -> str:
     keys = sorted(k for k in params if params[k] is not None)
@@ -359,8 +388,12 @@ async def photogpt_generate(req: PhotoGPTGenerateRequest, db: AsyncSession = Dep
                 await db.commit()
 
             t = int(time.time())
+
+            # 上传 data URL 图片到 OSS，换取 CDN URL（图生图支持）
+            input_urls = await _upload_data_urls(req.input_urls or [])
+
             handle_params = {
-                "input_urls": req.input_urls or [],
+                "input_urls": input_urls,
                 "type": 61,
                 "user_prompt": req.prompt,
                 "sub_type": 23,
