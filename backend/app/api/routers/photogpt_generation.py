@@ -198,7 +198,7 @@ def _serialize(job) -> dict:
 
 # ── Account Management ───────────────────────────────────────────
 
-async def _acquire_account(db: AsyncSession) -> Optional[PhotoGPTAccount]:
+async def _acquire_account(db: AsyncSession, _retry: int = 3) -> Optional[PhotoGPTAccount]:
     now = datetime.utcnow()
 
     # 先清理已耗尽额度的残留账号（防止上次生成后重启导致自动删除没跑）
@@ -209,6 +209,8 @@ async def _acquire_account(db: AsyncSession) -> Optional[PhotoGPTAccount]:
     )
     await db.commit()
 
+    # 原子方式：SELECT 一个空闲账号 → 尝试 UPDATE 抢锁（WHERE 带锁条件）
+    # 避免 TOCTOU 竞态：两个请求同时读到同一个账号时，只有一个 UPDATE 会生效
     stmt = (
         select(PhotoGPTAccount)
         .where(PhotoGPTAccount.status == "active")
@@ -216,22 +218,37 @@ async def _acquire_account(db: AsyncSession) -> Optional[PhotoGPTAccount]:
         .where(PhotoGPTAccount.credits_used < PhotoGPTAccount.credits)
         .where(PhotoGPTAccount.access_token.isnot(None))
         .where(PhotoGPTAccount.access_token != "")
-        .order_by(PhotoGPTAccount.last_used_at.asc().nullsfirst(), PhotoGPTAccount.id.asc())
-    )
-    accounts = (await db.execute(stmt)).scalars().all()
-    for account in accounts:
-        locked_until = getattr(account, "gen_locked_until", None)
-        if locked_until and locked_until > now:
-            continue
-        await db.execute(
-            update(PhotoGPTAccount)
-            .where(PhotoGPTAccount.id == account.id)
-            .values(gen_locked_until=now + timedelta(minutes=10), last_used_at=now)
+        .where(
+            (PhotoGPTAccount.gen_locked_until.is_(None))
+            | (PhotoGPTAccount.gen_locked_until < now)
         )
-        await db.commit()
-        await db.refresh(account)
-        return account
-    return None
+        .order_by(PhotoGPTAccount.last_used_at.asc().nullsfirst(), PhotoGPTAccount.id.asc())
+        .limit(1)
+    )
+    account = (await db.execute(stmt)).scalars().first()
+    if not account:
+        return None
+
+    # 原子 UPDATE：只在锁定已过期/为 NULL 时抢到，否则 WHERE 不匹配 → rowcount=0
+    result = await db.execute(
+        update(PhotoGPTAccount)
+        .where(PhotoGPTAccount.id == account.id)
+        .where(
+            (PhotoGPTAccount.gen_locked_until.is_(None))
+            | (PhotoGPTAccount.gen_locked_until < now)
+        )
+        .values(gen_locked_until=now + timedelta(minutes=10), last_used_at=now)
+    )
+    await db.commit()
+
+    if result.rowcount == 0:
+        # 被别的请求抢先了，递归重试（防深度递归）
+        if _retry > 0:
+            return await _acquire_account(db, _retry=_retry - 1)
+        return None
+
+    await db.refresh(account)
+    return account
 
 
 async def _release_account(account_id: int, db: AsyncSession):
@@ -288,15 +305,15 @@ async def _poll_generation(nc_token: str, project_id: str, job_id: int):
                 data = r.json()
                 code = data.get("code")
 
-                # ── 100014: project_id 不存在（审核删除 / 临时不可用） ──
+                # ── 100014: project_id 不存在（审核删除 / 过期 / 账号登出） ──
                 if code == 100014:
                     no_url_count += 1
                     if no_url_count >= 3:
-                        # 连续 3 次 100014 = 项目已被审核删除
+                        # 连续 3 次 100014 = 项目不可访问
                         async with async_session_factory() as session:
                             await session.execute(
                                 update(PhotoGPTJob).where(PhotoGPTJob.id == job_id)
-                                .values(status="failed", error_message="图片被审核拦截，项目已被删除")
+                                .values(status="failed", error_message="项目不存在（可能被审核删除、过期或账号已登出）")
                             )
                             await session.commit()
                         return
@@ -315,6 +332,11 @@ async def _poll_generation(nc_token: str, project_id: str, job_id: int):
                 audit_text = ""
                 for img in results_list:
                     url = img.get("url") or img.get("result_content", "")
+                    # 检查 result.error 字段（OpenAI/PhotoGPT 显式拒绝）
+                    err_text = img.get("error", "")
+                    if err_text and not url:
+                        has_audit_text = True
+                        audit_text = err_text
                     if url:
                         if url.startswith(("http://", "https://", "/", "data:")):
                             if url.startswith("/"):
@@ -346,12 +368,16 @@ async def _poll_generation(nc_token: str, project_id: str, job_id: int):
                         await session.commit()
                     return
 
-                # 🔴 AUDIT: status≥1 但无任何有效 URL（含 status=1=完成无图, status=2=理论上成功但空结果）
+                # ⚠️ EMPTY RESULT: status≥1 但无任何有效 URL
+                # status=1=PhotoGPT说完成但无图, status=2=理论上成功但空结果
+                # 不一定是审核拦截——可能是API格式变更、服务端内部错误、或结果URL格式不在预期范围
                 if status_val >= 1 and status_val != 3:
+                    result_error = result.get("error", "")
+                    specific_error = f" (服务端错误: {result_error[:100]})" if result_error else ""
                     async with async_session_factory() as session:
                         await session.execute(
                             update(PhotoGPTJob).where(PhotoGPTJob.id == job_id)
-                            .values(status="failed", error_message="图片被审核拦截，未生成实际图片")
+                            .values(status="failed", error_message=f"生成完成但未返回图片URL{specific_error}")
                         )
                         await session.commit()
                     return
@@ -369,11 +395,11 @@ async def _poll_generation(nc_token: str, project_id: str, job_id: int):
 
                 # ⏳ STILL PROCESSING: status=0 → 累计无结果次数
                 no_url_count += 1
-                if no_url_count >= 15:  # 45s 还在 status=0 → 可疑
+                if no_url_count >= 15:  # 45s 还在 status=0 → 超时
                     async with async_session_factory() as session:
                         await session.execute(
                             update(PhotoGPTJob).where(PhotoGPTJob.id == job_id)
-                            .values(status="failed", error_message="生成超时，疑似被审核拦截")
+                            .values(status="failed", error_message="生成超时（45秒仍在处理中），可能是服务器负载高或账号异常")
                         )
                         await session.commit()
                     return

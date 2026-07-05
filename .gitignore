@@ -60,6 +60,20 @@ start-e.bat
 docs/
 start - 副本.bat
 
+# ===== Electron 构建产物 =====
+electron/release/
+electron/node_modules/
+electron/.hermes-tmp.*
+backend/insmind-backend.spec
+
+# ===== 调试/实验文件 =====
+debug_*.png
+oiioii_*.py
+solve_and_register.py
+nul
+chrome-debug-profile/
+.worktrees/
+
 # ===== dreamina2api 排除 =====
 dreamina2api/README.CN.md
 dreamina2api/jimeng-api/

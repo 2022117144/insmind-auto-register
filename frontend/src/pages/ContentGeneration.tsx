@@ -351,11 +351,12 @@ export default function ContentGeneration() {
         // 直接跳转链接会触发浏览器自带的下载管理，秒开“另存为”对话框
         if (url) {
             const downloadUrl = `/api/content/download-proxy?url=${encodeURIComponent(url)}`
-            const link = document.createElement('a')
-            link.href = downloadUrl
-            document.body.appendChild(link)
-            link.click()
-            document.body.removeChild(link)
+            const a = document.createElement('a')
+            a.href = downloadUrl
+            a.download = url.split('/').pop()?.split('?')[0] || 'download'
+            document.body.appendChild(a)
+            a.click()
+            setTimeout(() => { document.body.removeChild(a) }, 100)
         }
     }
 

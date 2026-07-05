@@ -186,10 +186,17 @@ export default function Img2Generation() {
 
     const handleDownload = async (url?: string, _index?: number) => {
         if (!url) return
-        const downloadUrl = `/api/content/download-proxy?url=${encodeURIComponent(url)}`
-        const link = document.createElement('a')
-        link.href = downloadUrl
-        document.body.appendChild(link); link.click(); document.body.removeChild(link)
+        try {
+            const resp = await fetch(`/api/content/download-proxy?url=${encodeURIComponent(url)}`)
+            if (!resp.ok) { console.error('download failed', resp.status); return }
+            const blob = await resp.blob()
+            const name = url.split('/').pop()?.split('?')[0] || 'download.png'
+            const a = document.createElement('a')
+            a.href = URL.createObjectURL(blob)
+            a.download = name
+            document.body.appendChild(a); a.click()
+            setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(a.href) }, 100)
+        } catch (e) { console.error('download error', e) }
     }
 
     const handleBatchDownload = async () => {

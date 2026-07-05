@@ -432,8 +432,16 @@ from app.core import BASE_DIR
 from pathlib import Path
 import sys, os
 # 从当前文件位置推算: main.py 在 backend/app/
-app_dir = Path(__file__).resolve().parent.parent  # backend/
-project_root = app_dir.parent  # 项目根目录
+# 注意：PyInstaller 编译后 __file__ 指向临时目录，
+# 所以优先用工作目录（Electron 启动时 cwd=resources/backend/）
+cwd = Path.cwd()
+if (cwd / "frontend" / "dist").exists():
+    project_root = cwd.parent
+elif (cwd.parent / "frontend" / "dist").exists():
+    project_root = cwd.parent
+else:
+    app_dir = Path(__file__).resolve().parent.parent  # backend/
+    project_root = app_dir.parent  # 项目根目录
 frontend_dist = project_root / "frontend" / "dist"
 assets_path = frontend_dist / "assets"
 

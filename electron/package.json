@@ -1,0 +1,84 @@
+{
+  "name": "insmind-desktop",
+  "version": "5.1.0",
+  "description": "insMind Auto Register Desktop App",
+  "main": "main.js",
+  "scripts": {
+    "dev": "electron .",
+    "build": "electron-builder --win portable",
+    "dist": "electron-builder --win"
+  },
+  "build": {
+    "appId": "com.insmind.desktop",
+    "productName": "insMind Desktop",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "setup.html",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../backend/dist",
+        "to": "backend",
+        "filter": [
+          "*.exe"
+        ]
+      },
+      {
+        "from": "../insmind2api",
+        "to": "insmind2api",
+        "filter": [
+          "dist/**",
+          "package.json",
+          "package-lock.json",
+          "node_modules/**",
+          "!src/**",
+          "!logs/**",
+          "!*.db",
+          "!battery-report.html",
+          "!debug_*.js",
+          "!test_*.py",
+          "!test_*.js",
+          "!start_*.bat",
+          "!start_*.cmd",
+          "!starter.py",
+          "!runner.js",
+          "!proxy-bootstrap.js",
+          "!**/accounts.json",
+          "configs/**",
+          "!configs/accounts.json"
+        ]
+      },
+      {
+        "from": "../frontend/dist",
+        "to": "frontend/dist"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": null,
+      "certificateFile": null,
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+          "oneClick": false,
+          "allowToChangeInstallationDirectory": true,
+          "include": "installer.nsh",
+          "installerSidebar": null,
+          "installerHeader": null,
+          "createDesktopShortcut": true,
+          "createStartMenuShortcut": true,
+          "shortcutName": "insMind Desktop"
+        }
+  },
+  "devDependencies": {
+    "electron": "^33.3.0",
+    "electron-builder": "^25.1.0"
+  }
+}
