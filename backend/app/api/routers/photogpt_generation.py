@@ -5,6 +5,8 @@ import hmac
 import hashlib
 import json
 import logging
+import os
+import subprocess
 import time
 from datetime import datetime, timedelta
 from typing import Optional, List
@@ -283,10 +285,12 @@ async def _poll_generation(nc_token: str, project_id: str, job_id: int):
     """Background poll — 强化的审核拦截检测"""
     cookies = {"nc_token": nc_token}
     no_url_count = 0  # 连续无图片 URL 的轮询次数
+    proxy = _get_proxy()
+    proxy_str = str(proxy.get("https") or proxy.get("http")) if proxy else None
     for i in range(60):
         await asyncio.sleep(3)
         try:
-            async with requests.AsyncSession(impersonate="chrome124", timeout=20, proxies=_get_proxy()) as c:
+            async with httpx.AsyncClient(proxy=proxy_str, timeout=20) as c:
                 r = await c.get(
                     f"{PHOTOGPT_API}/api/v1/prediction/get-status",
                     params={"project_id": project_id},
@@ -395,11 +399,11 @@ async def _poll_generation(nc_token: str, project_id: str, job_id: int):
 
                 # ⏳ STILL PROCESSING: status=0 → 累计无结果次数
                 no_url_count += 1
-                if no_url_count >= 15:  # 45s 还在 status=0 → 超时
+                if no_url_count >= 60:  # 3min 还在 status=0 → 超时
                     async with async_session_factory() as session:
                         await session.execute(
                             update(PhotoGPTJob).where(PhotoGPTJob.id == job_id)
-                            .values(status="failed", error_message="生成超时（45秒仍在处理中），可能是服务器负载高或账号异常")
+                            .values(status="failed", error_message="生成超时（3分钟仍在处理中），可能是服务器负载高或账号异常")
                         )
                         await session.commit()
                     return
@@ -453,13 +457,6 @@ async def photogpt_generate(req: PhotoGPTGenerateRequest, db: AsyncSession = Dep
         else:
             os.environ.pop("HTTP_PROXY", None)
             os.environ.pop("HTTPS_PROXY", None)
-<<<<<<< HEAD
-        os.environ.setdefault("CURL_SSL_BACKEND", "schannel")
-        async with requests.AsyncSession(impersonate="chrome124", timeout=30, proxies=proxy) as c:
-            # 优先使用数据库里存的 access_token（= nc_token），避免重复登录冲掉 token
-            nc_token = account.access_token or ""
-            logger.warning(f"STORED_ACCESS_TOKEN_CHECK: nc_token={'Y' if nc_token else 'N'}, len={len(nc_token) if nc_token else 0}")
-=======
         async with httpx.AsyncClient(proxy=proxy_str if proxy else None, timeout=30) as c:
             nc_token = account.access_token or ""
             if nc_token:
@@ -495,77 +492,6 @@ async def photogpt_generate(req: PhotoGPTGenerateRequest, db: AsyncSession = Dep
                 )
                 await db.commit()
 
-        t = int(time.time())
-
-        input_urls = await _upload_data_urls(req.input_urls or [], nc_token)
-
-        handle_params = {
-            "input_urls": input_urls if input_urls else [],
-            "type": 61,
-            "user_prompt": req.prompt,
-            "sub_type": 23,
-            "aspect_ratio": req.aspect_ratio,
-            "output_num": req.output_num,
-            "quality": req.quality,
-            "resolution": req.resolution,
-            "sig_version": "v1",
-            "t": t,
-        }
-        handle_params["sign"] = _compute_sign(handle_params, PHOTOGPT_IMAGE_KEY)
-
-        proxy_for_req = proxy_str if proxy else None
-        temp_path = None
-        try:
-            import tempfile
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
-                json.dump(handle_params, f, separators=(",", ":"))
-                temp_path = f.name
-
-            curl_cmd = ["curl", "-s", "-X", "POST"]
-            if proxy_for_req:
-                curl_cmd += ["-x", proxy_for_req]
->>>>>>> 810d2f5 (V5.4: 修复PhotoGPT WAF拦截 + Cloudflare token移入config.json)
-            if nc_token:
-                # 轻量验证 nc_token 是否有效
-                check_headers = POLL_HEADERS.copy()
-                c.cookies.set("nc_token", nc_token, domain="photogpt.io")
-                check_r = await c.get(
-                    f"{PHOTOGPT_API}/api/v1/userinfo",
-                    headers=check_headers,
-                )
-                check_data = check_r.json()
-                logger.warning(f"TOKEN_CHECK_RESULT: code={check_data.get('code')}, msg={check_data.get('message','')}")
-                if check_data.get("code") != 100000:
-                    nc_token = ""  # 过期了，重新登录
-
-            if not nc_token:
-                logger.warning("TOKEN_EXPIRED, starting login flow")
-                # Login — capture nc_token cookie
-                r = await c.post(
-                    f"{PHOTOGPT_API}/api/v1/auth/login",
-                    json={"email": account.email, "password": account.password or "Test123456!"},
-                    headers=BROWSER_HEADERS,
-                )
-                login_data = r.json()
-                if login_data.get("code") != 100000:
-                    await _auto_disable_account(account, db, "login_failed")
-                    raise HTTPException(status_code=502, detail=f"PhotoGPT 登录失败: {login_data.get('message','')}")
-
-                # Get nc_token from cookies (NOT Bearer token — PhotoGPT uses cookies!)
-                nc_token = c.cookies.get("nc_token", "")
-                login_code = login_data.get("data", {}).get("access_token", "NONE")
-                logger.warning(f"LOGIN_RESULT: nc_from_cookie={'Y' if nc_token else 'N'}, len={len(nc_token) if nc_token else 0}, access_token_from_body={login_code[:15]}...")
-                if not nc_token:
-                    await _release_account(account.id, db)
-                    raise HTTPException(status_code=502, detail="登录后未获取到 nc_token")
-
-                # 存入数据库，下次复用
-                await db.execute(
-                    update(PhotoGPTAccount).where(PhotoGPTAccount.id == account.id)
-                    .values(access_token=nc_token)
-                )
-                await db.commit()
-
             t = int(time.time())
 
             # 上传 data URL 图片到 OSS，换取 CDN URL（图生图支持）
@@ -588,12 +514,39 @@ async def photogpt_generate(req: PhotoGPTGenerateRequest, db: AsyncSession = Dep
             # Submit handle — auth via nc_token cookie, NOT Bearer header
             # NOTE: nc_token 已在登录后存入 cookie jar，curl_cffi 会自动带上
             # 不要传 cookies= 参数，否则会重复发送
-            r2 = await c.post(
-                f"{PHOTOGPT_API}/api/v1/prediction/handle",
-                json=handle_params,
-                headers=BROWSER_HEADERS,
-            )
-            gen_data = r2.json()
+            proxy_for_req = proxy_str if proxy else None
+            temp_path = None
+            try:
+                import tempfile
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
+                    json.dump(handle_params, f, separators=(",", ":"))
+                    temp_path = f.name
+
+                curl_cmd = ["curl", "-s", "-X", "POST"]
+                if proxy_for_req:
+                    curl_cmd += ["-x", proxy_for_req]
+                if nc_token:
+                    curl_cmd += ["-b", f"nc_token={nc_token}"]
+                for k, v in BROWSER_HEADERS.items():
+                    curl_cmd += ["-H", f"{k}: {v}"]
+                curl_cmd += ["-d", f"@{temp_path}", f"{PHOTOGPT_API}/api/v1/prediction/handle"]
+
+                loop = asyncio.get_event_loop()
+                import subprocess as _sp
+                result = await loop.run_in_executor(None, lambda: _sp.run(
+                    curl_cmd, capture_output=True, text=True, timeout=30
+                ))
+            finally:
+                if temp_path:
+                    try:
+                        os.unlink(temp_path)
+                    except Exception:
+                        pass
+
+            if result.returncode != 0:
+                raise HTTPException(status_code=502, detail=f"curl 请求失败: {result.stderr[:200]}")
+
+            gen_data = json.loads(result.stdout) if result.stdout.strip() else {}
             if gen_data.get("code") != 100000:
                 err_msg = gen_data.get("message", "")
                 if "credits" in err_msg.lower() or "0 credits" in err_msg:
