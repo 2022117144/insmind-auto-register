@@ -73,6 +73,7 @@ solve_and_register.py
 nul
 chrome-debug-profile/
 .worktrees/
+cloudflare-worker/config.json
 
 # ===== dreamina2api 排除 =====
 dreamina2api/README.CN.md

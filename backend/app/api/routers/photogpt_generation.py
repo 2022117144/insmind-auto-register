@@ -453,11 +453,78 @@ async def photogpt_generate(req: PhotoGPTGenerateRequest, db: AsyncSession = Dep
         else:
             os.environ.pop("HTTP_PROXY", None)
             os.environ.pop("HTTPS_PROXY", None)
+<<<<<<< HEAD
         os.environ.setdefault("CURL_SSL_BACKEND", "schannel")
         async with requests.AsyncSession(impersonate="chrome124", timeout=30, proxies=proxy) as c:
             # 优先使用数据库里存的 access_token（= nc_token），避免重复登录冲掉 token
             nc_token = account.access_token or ""
             logger.warning(f"STORED_ACCESS_TOKEN_CHECK: nc_token={'Y' if nc_token else 'N'}, len={len(nc_token) if nc_token else 0}")
+=======
+        async with httpx.AsyncClient(proxy=proxy_str if proxy else None, timeout=30) as c:
+            nc_token = account.access_token or ""
+            if nc_token:
+                check_headers = {k: v for k, v in BROWSER_HEADERS.items() if k.lower() != "content-type"}
+                check_r = await c.get(
+                    f"{PHOTOGPT_API}/api/v1/userinfo",
+                    headers=check_headers,
+                    cookies={"nc_token": nc_token},
+                )
+                check_data = check_r.json()
+                if check_data.get("code") != 100000:
+                    nc_token = ""
+
+            if not nc_token:
+                r = await c.post(
+                    f"{PHOTOGPT_API}/api/v1/auth/login",
+                    json={"email": account.email, "password": account.password or "Test123456!"},
+                    headers=BROWSER_HEADERS,
+                )
+                login_data = r.json()
+                if login_data.get("code") != 100000:
+                    await _auto_disable_account(account, db, "login_failed")
+                    raise HTTPException(status_code=502, detail=f"PhotoGPT 登录失败: {login_data.get('message','')}")
+
+                nc_token = r.cookies.get("nc_token", "")
+                if not nc_token:
+                    await _release_account(account.id, db)
+                    raise HTTPException(status_code=502, detail="登录后未获取到 nc_token")
+
+                await db.execute(
+                    update(PhotoGPTAccount).where(PhotoGPTAccount.id == account.id)
+                    .values(access_token=nc_token)
+                )
+                await db.commit()
+
+        t = int(time.time())
+
+        input_urls = await _upload_data_urls(req.input_urls or [], nc_token)
+
+        handle_params = {
+            "input_urls": input_urls if input_urls else [],
+            "type": 61,
+            "user_prompt": req.prompt,
+            "sub_type": 23,
+            "aspect_ratio": req.aspect_ratio,
+            "output_num": req.output_num,
+            "quality": req.quality,
+            "resolution": req.resolution,
+            "sig_version": "v1",
+            "t": t,
+        }
+        handle_params["sign"] = _compute_sign(handle_params, PHOTOGPT_IMAGE_KEY)
+
+        proxy_for_req = proxy_str if proxy else None
+        temp_path = None
+        try:
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
+                json.dump(handle_params, f, separators=(",", ":"))
+                temp_path = f.name
+
+            curl_cmd = ["curl", "-s", "-X", "POST"]
+            if proxy_for_req:
+                curl_cmd += ["-x", proxy_for_req]
+>>>>>>> 810d2f5 (V5.4: 修复PhotoGPT WAF拦截 + Cloudflare token移入config.json)
             if nc_token:
                 # 轻量验证 nc_token 是否有效
                 check_headers = POLL_HEADERS.copy()

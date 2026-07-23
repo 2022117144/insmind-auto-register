@@ -1,0 +1,5 @@
+{
+  "account_id": "your_account_id",
+  "api_token": "your_api_token",
+  "kv_namespace_id": "your_kv_namespace_id"
+}
