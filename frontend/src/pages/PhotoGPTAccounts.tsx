@@ -52,15 +52,29 @@ export default function PhotoGPTAccounts() {
     const [registering, setRegistering] = useState(false)
     const [batchRegistering, setBatchRegistering] = useState(false)
     const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+    const [autoDelete, setAutoDelete] = useState(true)
     const { t } = useLanguage()
 
     useEffect(() => {
         fetchAccounts()
+        photogptAccountsApi.getSettings().then(cfg => {
+            if (cfg) setAutoDelete(cfg.auto_delete_on_exhaust)
+        }).catch(() => {})
     }, [filterStatus])
 
-    const fetchAccounts = async () => {
-        setLoading(true)
+    const toggleAutoDelete = async () => {
+        const next = !autoDelete
+        setAutoDelete(next)
         try {
+            await photogptAccountsApi.updateSettings({ auto_delete_on_exhaust: next })
+        } catch (e) {
+            setAutoDelete(!next)
+        }
+    }
+
+    const fetchAccounts = async () => {
+    setLoading(true)
+    try {
             const data = await photogptAccountsApi.list({
                 status: filterStatus !== 'all' ? filterStatus : undefined,
             })
@@ -232,6 +246,19 @@ export default function PhotoGPTAccounts() {
 
             {/* Filters */}
             <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2 mr-auto">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                            type="checkbox"
+                            className="accent-emerald-500 w-4 h-4"
+                            checked={!autoDelete}
+                            onChange={toggleAutoDelete}
+                        />
+                        <span className="text-xs text-muted-foreground select-none">
+                            {autoDelete ? '用完自动删除' : '每天重置额度'}
+                        </span>
+                    </label>
+                </div>
                 <div className="relative flex-1 max-w-sm">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                     <Input
@@ -311,8 +338,7 @@ export default function PhotoGPTAccounts() {
                                         {(() => {
                                             const remaining = Math.max(0, (account.credits ?? 0) - (account.credits_used ?? 0))
                                             const colorClass = remaining <= 0 ? 'text-red-400 border-red-500/30'
-                                                : remaining <= 4 ? 'text-amber-400 border-amber-500/30'
-                                                : remaining <= 8 ? 'text-yellow-400 border-yellow-500/30'
+                                                : remaining <= 1 ? 'text-amber-400 border-amber-500/30'
                                                 : 'text-emerald-400 border-emerald-500/30'
                                             return (
                                                 <Badge variant="outline" className={`font-mono text-xs border-white/10 ${colorClass}`}>

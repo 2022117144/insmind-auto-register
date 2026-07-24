@@ -394,3 +394,38 @@ async def auto_register_batch_photogpt(
         failed=count - success_count,
         results=results,
     )
+
+
+# ── 设置（自动删除开关） ──────────────────────────────────────────
+
+_PHOTOGPT_CONFIG_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "photogpt_config.json")
+
+def _load_config() -> dict:
+    try:
+        with open(_PHOTOGPT_CONFIG_FILE) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {"auto_delete_on_exhaust": True}
+
+def _save_config(cfg: dict):
+    os.makedirs(os.path.dirname(_PHOTOGPT_CONFIG_FILE), exist_ok=True)
+    with open(_PHOTOGPT_CONFIG_FILE, "w") as f:
+        json.dump(cfg, f)
+
+
+@router.get("/photogpt/settings")
+async def get_photogpt_settings():
+    cfg = _load_config()
+    return cfg
+
+
+class PhotoGPTSettingsUpdate(BaseModel):
+    auto_delete_on_exhaust: bool
+
+
+@router.put("/photogpt/settings")
+async def update_photogpt_settings(body: PhotoGPTSettingsUpdate):
+    cfg = _load_config()
+    cfg["auto_delete_on_exhaust"] = body.auto_delete_on_exhaust
+    _save_config(cfg)
+    return cfg

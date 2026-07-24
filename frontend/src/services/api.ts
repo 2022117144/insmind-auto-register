@@ -394,6 +394,8 @@ export const photogptAccountsApi = {
     batchDelete: (ids: number[]) => api.post<{ message: string; deleted: number }>('/photogpt/accounts/batch-delete', { ids }),
     autoRegister: () => api.post<{ success: boolean; email?: string; access_token?: string; pool_total: number; error?: string }>('/photogpt/accounts/auto-register'),
     autoRegisterBatch: (count: number) => api.post<{ total: number; success: number; failed: number; results: any[] }>(`/photogpt/accounts/auto-register-batch?count=${count}`),
+    getSettings: () => api.get<{ auto_delete_on_exhaust: boolean }>('/photogpt/settings'),
+    updateSettings: (data: { auto_delete_on_exhaust: boolean }) => api.put<{ auto_delete_on_exhaust: boolean }>('/photogpt/settings', data),
 }
 
 export interface ProxyNode {

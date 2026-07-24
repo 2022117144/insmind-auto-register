@@ -430,6 +430,27 @@ async def photogpt_generate(req: PhotoGPTGenerateRequest, db: AsyncSession = Dep
     if not account:
         raise HTTPException(status_code=503, detail="没有可用 PhotoGPT 账号")
 
+    # 如果自动删除关闭，每天重置额度
+    import json as _j
+    _cfg_p = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "photogpt_config.json")
+    try:
+        with open(_cfg_p) as _f:
+            _cfg = _j.load(_f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        _cfg = {}
+    if not _cfg.get("auto_delete_on_exhaust", True):
+        # 检查是否跨天，跨天则重置
+        _today = datetime.utcnow().date()
+        _last = account.last_used_at
+        if _last and _last.date() < _today:
+            account.credits_used = 0
+            await db.execute(
+                update(PhotoGPTAccount).where(PhotoGPTAccount.id == account.id)
+                .values(credits_used=0)
+            )
+            await db.commit()
+            logger.info(f"PhotoGPT account {account.email} daily credits reset")
+
     now = datetime.utcnow()
     job = PhotoGPTJob(
         status="submitting",
@@ -563,8 +584,8 @@ async def photogpt_generate(req: PhotoGPTGenerateRequest, db: AsyncSession = Dep
             .values(status="submitted", project_id=project_id)
         )
 
-        # 每次生成消耗 4 个额度（账号初始 20，可生成 5 次）
-        new_credits_used = (account.credits_used or 0) + 4
+        # 每次生成消耗 1 个额度（账号初始 3，可生成 3 次）
+        new_credits_used = (account.credits_used or 0) + 1
         await db.execute(
             update(PhotoGPTAccount).where(PhotoGPTAccount.id == account.id).values(
                 gen_locked_until=None,
@@ -573,13 +594,32 @@ async def photogpt_generate(req: PhotoGPTGenerateRequest, db: AsyncSession = Dep
         )
         await db.commit()
 
-        # 额度用完 → 自动删除该账号
+        # 额度用完 → 根据设置决定是否自动删除
         if new_credits_used >= account.credits:
-            await db.execute(
-                delete(PhotoGPTAccount).where(PhotoGPTAccount.id == account.id)
-            )
-            await db.commit()
-            logger.info(f"PhotoGPT account {account.email} auto-deleted (credits exhausted)")
+            # 检查设置
+            import json as _json
+            _cfg_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "photogpt_config.json")
+            _auto_del = True
+            try:
+                with open(_cfg_path) as _f:
+                    _auto_del = _json.load(_f).get("auto_delete_on_exhaust", True)
+            except (FileNotFoundError, json.JSONDecodeError):
+                pass
+            if _auto_del:
+                await db.execute(
+                    delete(PhotoGPTAccount).where(PhotoGPTAccount.id == account.id)
+                )
+                await db.commit()
+                logger.info(f"PhotoGPT account {account.email} auto-deleted (credits exhausted)")
+            else:
+                # 不删除，重置额度
+                from datetime import date as _date
+                await db.execute(
+                    update(PhotoGPTAccount).where(PhotoGPTAccount.id == account.id)
+                    .values(credits_used=0, last_used_at=datetime.utcnow())
+                )
+                await db.commit()
+                logger.info(f"PhotoGPT account {account.email} credits reset (auto-delete off)")
 
         # Start polling with nc_token (NOT Bearer token)
         asyncio.create_task(_poll_generation(nc_token, project_id, job.id))

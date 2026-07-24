@@ -14,7 +14,7 @@ class PhotoGPTAccount(Base):
     email = Column(String(255), unique=True, index=True, nullable=False, comment="临时邮箱地址")
     access_token = Column(Text, comment="PhotoGPT 登录 token (Bearer)")
     password = Column(String(255), default="", comment="账号密码")
-    credits = Column(Integer, default=20, comment="免费点数")
+    credits = Column(Integer, default=3, comment="免费点数")
     credits_used = Column(Integer, default=0, comment="已使用点数")
 
     status = Column(String(20), default="active", comment="状态: active/expired/banned")
