@@ -1,6 +1,7 @@
 """
 Content generation API routes with concurrent account locking.
 """
+print(">>> LOADED content_generation.py <<<")
 import json
 import logging
 import time
@@ -270,9 +271,12 @@ async def get_generation_models(
             {"id": "gpt-image-2", "category": "image"},
             {"id": "Pixverse-V6.0", "category": "video"},
             {"id": "Seedance-2.0-Mini", "category": "video"},
+            {"id": "Wan-2.2", "category": "video"},
         ],
         "meta": {"country": resolved_region, "profile": resolved_region, "model_set": resolved_region},
     }
+    logger.info(f"DEBUG payload: {payload}")
+    logger.info(f"DEBUG video_models before filter: {[str(item.get('id')) for item in payload.get('data', []) if item.get('category') == 'video' and item.get('id')]}")
 
     data = payload.get("data") or []
     image_models = [

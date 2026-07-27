@@ -17,7 +17,7 @@ type FilterType = 'all' | 'image' | 'video'
 
 const fallbackModelOptions: Record<JobType, string[]> = {
     image: ['gpt-image-2', 'gpt-image-2-extreme', 'Qwen-Image-2-0', 'Qwen-Image-2-0-Pro', 'Nano-Banana2-Flash'],
-    video: ['Pixverse-V6.0', 'Seedance-2.0-Mini'],
+    video: ['Seedance-2.0-Mini', 'Pixverse-V6.0'],
 }
 
 const ACTIVE_JOB_STATUSES: ContentGenerationJob['status'][] = ['submitting', 'submitted', 'processing']
@@ -39,8 +39,8 @@ export default function ContentGeneration() {
     const [modelOptions, setModelOptions] = useState<Record<JobType, string[]>>(fallbackModelOptions)
     const [model, setModel] = useState(fallbackModelOptions.video[0])
     const [ratio, setRatio] = useState('1:1')
-    const [resolution, setResolution] = useState('360p')
-    const [duration, setDuration] = useState(10)
+    const [resolution, setResolution] = useState('480p')
+    const [duration, setDuration] = useState(5)
     const [omniReferenceEnabled, setOmniReferenceEnabled] = useState(false)
     const [inputImages, setInputImages] = useState<string[]>([])
     const [selectedIds, setSelectedIds] = useState<number[]>([])
@@ -57,7 +57,7 @@ export default function ContentGeneration() {
     const durationOptions = useMemo(() => {
         if (jobType !== 'video') return []
         if (model === 'Seedance-2.0-Mini') return [5]
-        if (model === 'Pixverse-V6.0') return [10]
+        if (model === 'Pixverse-V6.0' || model === 'Wan-2.2') return [5]
         if (SEEDANCE_MODELS.includes(model)) {
             return Array.from({ length: 12 }, (_, index) => index + 4)
         }
@@ -91,7 +91,7 @@ export default function ContentGeneration() {
             const nextOptions: Record<JobType, string[]> = {
                 image: data.image_models.length ? data.image_models : fallbackModelOptions.image,
                 video: data.video_models.length
-                    ? data.video_models.filter((m: string) => m === 'Pixverse-V6.0' || m === 'Seedance-2.0-Mini' || m === 'Seedance-2.0')
+                    ? data.video_models.filter((m: string) => m === 'Pixverse-V6.0' || m === 'Seedance-2.0-Mini' || m === 'Wan-2.2')
                     : fallbackModelOptions.video,
             }
             setModelOptions(nextOptions)
@@ -153,14 +153,17 @@ export default function ContentGeneration() {
     }, [supportsOmniReference, omniReferenceEnabled])
 
     useEffect(() => {
-        if (model === 'Seedance-2.0-Mini') {
-            setResolution('480p')
-            setDuration(5)
-        } else if (model === 'Pixverse-V6.0') {
-            setResolution('360p')
-            setDuration(10)
-        }
-    }, [model])
+            if (model === 'Seedance-2.0-Mini') {
+                setResolution('480p')
+                setDuration(5)
+            } else if (model === 'Pixverse-V6.0') {
+                setResolution('360p')
+                setDuration(5)
+            } else if (model === 'Wan-2.2') {
+                setResolution('480p')
+                setDuration(5)
+            }
+        }, [model])
 
     useEffect(() => {
         if (jobType === 'video') {

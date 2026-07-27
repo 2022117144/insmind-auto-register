@@ -22,6 +22,9 @@ interface InsMindAccount {
 }
 /**
  * Parse the token.prod JWT to extract refresh_token and expiry info
+ * Supports two formats:
+ *   1. JWT format (3 parts, header.payload.signature)
+ *   2. Base64-encoded JSON: {"access_token":"...","refresh_token":"...",...}
  */
 export declare function parseTokenProd(tokenProdStr: string): {
     accessToken: string;

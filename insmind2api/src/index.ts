@@ -445,7 +445,7 @@ async function sseFetchStream(url: string, bodyStr: string, headers: Record<stri
 // ============ Pricing ============
 
 router.post('/v1/videos/pricing', async (ctx) => {
-    const { model = 'Pixverse-V6.0', duration = 10, resolution = '360P' } = ctx.request.body as any;
+    const { model = 'Seedance-2.0-Mini', duration = 5, resolution = '480P' } = ctx.request.body as any;
     const baseCosts: Record<string, number> = {
         'Pixverse-V6.0': 50, 'Wan-2.7': 80, 'Wan-2.2': 20,
         'Kling-3.0': 60, 'Seedance-2.0': 40, 'Seedance-2.0-Mini': 20, 'VEO-3.1': 70,
@@ -460,7 +460,7 @@ router.post('/v1/videos/pricing', async (ctx) => {
 
 router.post('/v1/videos/generations', async (ctx) => {
     const body = ctx.request.body as any;
-    const { prompt, model = 'Pixverse-V6.0', duration = 10, resolution = '360P', aspect_ratio = '16:9' } = body;
+    const { prompt, model = 'Seedance-2.0-Mini', duration = 5, resolution = '480P', aspect_ratio = '16:9' } = body;
 
     const account = getNextAccount();
     if (!account) {
@@ -597,7 +597,7 @@ function _guessMime(url: string): string {
 }
 
 router.post('/v1/videos/generations-image', async (ctx) => {
-    const { prompt, model = 'Pixverse-V6.0', duration = 10, resolution = '360P', aspect_ratio = '16:9', image_url, image_urls, account_email } = ctx.request.body as any;
+    const { prompt, model = 'Seedance-2.0-Mini', duration = 5, resolution = '480P', aspect_ratio = '16:9', image_url, image_urls, account_email } = ctx.request.body as any;
 
     // Support both single image_url and array image_urls
     const inputUrls: string[] = image_urls || (image_url ? [image_url] : []);

@@ -336,7 +336,7 @@ async def auto_register_insmind_account(db: AsyncSession = Depends(get_db)):
     script_path = "E:/视频生成/dreamina-auto-register-main/register_insmind.py"
 
     # 优先使用 Hermes 的 venv python（已安装所有依赖）
-    python_cmd = "E:/视频生成/dreamina-auto-register-main/backend/.venv/Scripts/python.exe"
+    python_cmd = "E:/视频生成/dreamina-auto-register-main/backend/.venv_win/Scripts/python.exe"
     
     logger.info("开始自动注册 insMind 账号...")
 
@@ -439,7 +439,7 @@ async def batch_auto_register_insmind(
     import re as re_mod
 
     script_path = "E:/视频生成/dreamina-auto-register-main/register_insmind.py"
-    python_cmd = "E:/视频生成/dreamina-auto-register-main/backend/.venv/Scripts/python.exe"
+    python_cmd = "E:/视频生成/dreamina-auto-register-main/backend/.venv_win/Scripts/python.exe"
     MAX_CONCURRENT = 3  # Playwright 很重，限制并发
 
     semaphore = asyncio.Semaphore(MAX_CONCURRENT)
