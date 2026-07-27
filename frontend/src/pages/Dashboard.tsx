@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
     Users,
     CheckCircle,
@@ -8,7 +8,8 @@ import {
     ShieldCheck,
     Cloud,
     FileJson,
-    History as HistoryIcon
+    History as HistoryIcon,
+    Terminal
 } from 'lucide-react'
 import { api } from '../services/api'
 import { Link } from 'react-router-dom'
@@ -18,6 +19,12 @@ import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import { useLanguage } from '@/contexts/LanguageContext'
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
+import {
+    Dialog,
+    DialogContent,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog"
 
 interface DashboardStats {
     accounts: {
@@ -43,26 +50,85 @@ interface HealthStatus {
     cloudflare_kv: string
 }
 
+// 从 localStorage 恢复 logSessions（刷新浏览器不丢失）
+const LOG_SESSIONS_KEY = 'dashboard_log_sessions'
+let cachedLogSessions: string[] = (() => {
+    try {
+        const raw = localStorage.getItem(LOG_SESSIONS_KEY)
+        return raw ? JSON.parse(raw) : []
+    } catch { return [] }
+})()
+
 const Dashboard = () => {
     const [stats, setStats] = useState<DashboardStats | null>(null)
     const [health, setHealth] = useState<HealthStatus | null>(null)
     const [loading, setLoading] = useState(true)
+    const [logOpen, setLogOpen] = useState(false)
+    const [logLines, setLogLines] = useState<string[]>([])
+    const [logLoading, setLogLoading] = useState(false)
+    const [logSessions, setLogSessions] = useState<string[]>(cachedLogSessions)
+    const logEndRef = useRef<HTMLDivElement>(null)
     const { t } = useLanguage()
 
     const fetchData = async () => {
         setLoading(true)
         try {
-            const [statsRes, healthRes] = await Promise.all([
-                api.get<DashboardStats>('/dashboard/stats'),
-                api.get<{ services: HealthStatus }>('/health')
-            ])
+            const statsRes = await api.get<DashboardStats>('/dashboard/stats')
             setStats(statsRes)
-            setHealth(healthRes.services)
         } catch (error) {
             console.error('Failed to fetch dashboard data:', error)
         } finally {
             setLoading(false)
         }
+        // 后台静默加载健康状态，不阻塞界面
+        api.get<{ services: HealthStatus }>('/health')
+            .then(res => setHealth(res.services))
+            .catch(() => {})
+    }
+    const makeLogTs = () => {
+        const now = new Date()
+        return now.getFullYear() + '-' +
+            String(now.getMonth() + 1).padStart(2, '0') + '-' +
+            String(now.getDate()).padStart(2, '0') + ' ' +
+            String(now.getHours()).padStart(2, '0') + ':' +
+            String(now.getMinutes()).padStart(2, '0') + ':' +
+            String(now.getSeconds()).padStart(2, '0') + ',' +
+            String(now.getMilliseconds()).padStart(3, '0')
+    }
+
+    const fetchLogs = async () => {
+        setLogLoading(true)
+        setLogOpen(true)
+        try {
+            // 取最近 3 次打开中最旧的时间点，只加载那次之后的日志
+            const since = logSessions.length > 0 ? logSessions[0] : undefined
+            const url = '/logs?lines=500' + (since ? `&since=${encodeURIComponent(since)}` : '')
+            const res = await api.get<{ lines: string[]; last_ts: string | null }>(url)
+            setLogLines(res.lines)
+            setLogSessions(prev => {
+                const next = [...prev, makeLogTs()].slice(-3)
+                cachedLogSessions = next
+                localStorage.setItem(LOG_SESSIONS_KEY, JSON.stringify(next))
+                return next
+            })
+            // 自动滚动到最新消息
+            setTimeout(() => logEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
+        } catch (error) {
+            setLogLines(['加载日志失败: ' + (error as Error).message])
+        } finally {
+            setLogLoading(false)
+        }
+    }
+
+    const clearLogs = () => {
+        setLogLines([])
+        // 重置 session，下次打开只显示清空之后的日志
+        setLogSessions(() => {
+                const next = [makeLogTs()]
+                cachedLogSessions = next
+                localStorage.setItem(LOG_SESSIONS_KEY, JSON.stringify(next))
+                return next
+            })
     }
 
     useEffect(() => {
@@ -79,6 +145,7 @@ const Dashboard = () => {
     if (loading) return <div className="p-8 text-muted-foreground font-bold animate-pulse">{t('common.loading')}</div>
 
     return (
+        <>
         <div className="flex-1 space-y-10 pt-6 animate-in fade-in duration-500">
             <div className="flex items-center justify-between">
                 <div>
@@ -86,6 +153,10 @@ const Dashboard = () => {
                     <p className="text-muted-foreground mt-1 text-lg">{t('dashboard.subtitle')}</p>
                 </div>
                 <div className="flex gap-3">
+                    <Button variant="outline" size="lg" onClick={fetchLogs} className="bg-card/40 border-border/40 text-xs font-bold h-11 rounded-xl hover:bg-card/60 transition-all shadow-sm">
+                        <Terminal className="mr-2 h-4 w-4 opacity-40" />
+                        打印日志
+                    </Button>
                     <Button variant="outline" size="lg" onClick={fetchData} className="bg-card/40 border-border/40 text-xs font-bold h-11 rounded-xl hover:bg-card/60 transition-all shadow-sm">
                         <RefreshCw className="mr-2 h-4 w-4 opacity-40" />
                         {t('common.refresh')}
@@ -199,6 +270,64 @@ const Dashboard = () => {
                 </Card>
             </div>
         </div>
+
+            {/* 日志弹窗 */}
+            <Dialog open={logOpen} onOpenChange={setLogOpen}>
+                <DialogContent className="max-w-5xl max-h-[85vh] bg-[#0a0c10] border border-white/10 rounded-2xl shadow-2xl backdrop-blur-xl">
+                    <DialogHeader>
+                        <DialogTitle className="text-lg font-black tracking-tight flex items-center gap-2">
+                            <Terminal className="h-5 w-5 text-emerald-400" />
+                            后端日志
+                            <span className="text-xs font-normal text-muted-foreground/40 ml-2">最近 500 行</span>
+                            <div className="ml-auto flex gap-2">
+                                {logLines.length > 0 && (
+                                    <button
+                                        onClick={clearLogs}
+                                        className="text-xs text-muted-foreground/40 hover:text-red-400 transition-colors font-bold px-2 py-1 rounded-md hover:bg-red-500/10"
+                                    >
+                                        清空
+                                    </button>
+                                )}
+                                <button
+                                    onClick={fetchLogs}
+                                    className="text-xs text-muted-foreground/40 hover:text-foreground transition-colors font-bold px-2 py-1 rounded-md hover:bg-white/5"
+                                >
+                                    刷新
+                                </button>
+                            </div>
+                        </DialogTitle>
+                    </DialogHeader>
+                    <div className="relative flex-1 min-h-0 overflow-hidden rounded-xl border border-white/5 bg-black/60">
+                        {logLoading ? (
+                            <div className="flex items-center justify-center h-64 text-muted-foreground animate-pulse font-bold">
+                                加载中...
+                            </div>
+                        ) : (
+                            <div className="h-[60vh] overflow-y-auto p-4 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-all">
+                                {logLines.length === 0 ? (
+                                    <div className="text-muted-foreground/40 italic">暂无日志</div>
+                                ) : (
+                                    <>
+                                    {logLines.map((line, i) => (
+                                        <div key={i} className="hover:bg-white/[0.02] rounded px-1 py-0.5">
+                                            <span className="text-muted-foreground/20 select-none mr-3">{i + 1}</span>
+                                            <span className={
+                                                line.includes('ERROR') ? 'text-red-400' :
+                                                line.includes('WARNING') ? 'text-amber-400' :
+                                                line.includes('INFO') ? 'text-sky-300' :
+                                                'text-muted-foreground/60'
+                                            }>{line}</span>
+                                        </div>
+                                    ))}
+                                    <div ref={logEndRef} />
+                                    </>
+                            )}
+                            </div>
+                        )}
+                    </div>
+                </DialogContent>
+            </Dialog>
+            </>
     )
 }
 

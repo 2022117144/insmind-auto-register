@@ -24,7 +24,7 @@ class PhotoGPTAccountCreate(BaseModel):
     email: str
     access_token: str
     password: str = ""
-    credits: int = 20
+    credits: int = 3
 
 
 class BatchDeleteRequest(BaseModel):
@@ -46,22 +46,29 @@ class BatchRegisterResponse(BaseModel):
     results: list = []
 
 
-# ── Proxy auto-detect (cached) ──────────────────────────────────
+# ── Proxy auto-detect (cached, with TTL) ────────────────────────
 
 _proxy_url: Optional[str] = None
 _proxy_checked = False
+_proxy_last_ok = 0.0  # 上次成功检测到代理的时间戳
 
 
 def _get_proxy() -> Optional[str]:
-    global _proxy_url, _proxy_checked
+    global _proxy_url, _proxy_checked, _proxy_last_ok
+    _t = __import__("time").time
     if _proxy_checked:
-        return _proxy_url
+        # 如果缓存了 None（无代理），每 30 秒重新检测一次
+        if _proxy_url is None and _t() - _proxy_last_ok > 30:
+            _proxy_checked = False
+        else:
+            return _proxy_url
     _proxy_checked = True
     for p in [7897, 7890]:
         try:
             s = __import__("socket").create_connection(("127.0.0.1", p), timeout=0.5)
             s.close()
             _proxy_url = f"http://127.0.0.1:{p}"
+            _proxy_last_ok = _t()
             return _proxy_url
         except:
             continue
@@ -115,6 +122,8 @@ def _run_register_sync(password: str, proxy_url: Optional[str] = None, max_retri
             try:
                 r = httpx.get(f"https://api.internal.temp-mail.io/api/v3/email/{email}/messages")
                 if r.status_code != 200:
+                    logger.warning(f"temp-mail 轮询失败: {r.status_code} {email}")
+                    # 400 是查信接口问题，不是域名被屏蔽，不标记
                     continue
                 messages = r.json()
                 if not isinstance(messages, list):
@@ -139,8 +148,8 @@ def _run_register_sync(password: str, proxy_url: Optional[str] = None, max_retri
         return None
 
     def _gen_email() -> str | None:
-        """从 api.internal.temp-mail.io 生成一个新邮箱，跳过已知被屏蔽的域名"""
-        for _ in range(5):
+        """从 api.internal.temp-mail.io 生成一个新邮箱（跳过已屏蔽域名）"""
+        for _ in range(10):  # 重试 10 次，7 个域名够覆盖
             try:
                 r = httpx.post("https://api.internal.temp-mail.io/api/v3/email/new")
                 if r.status_code != 200:
@@ -151,6 +160,22 @@ def _run_register_sync(password: str, proxy_url: Optional[str] = None, max_retri
                     continue
                 domain = email.split("@", 1)[-1]
                 if domain in _KNOWN_BLOCKED_DOMAINS:
+                    logger.debug(f"跳过已屏蔽域名: {domain}")
+                    continue
+                return email
+            except Exception:
+                continue
+        # 所有域名都被屏蔽了，清空重试一次
+        logger.warning("所有域名均被屏蔽，清空屏蔽列表重试")
+        _KNOWN_BLOCKED_DOMAINS.clear()
+        for _ in range(5):
+            try:
+                r = httpx.post("https://api.internal.temp-mail.io/api/v3/email/new")
+                if r.status_code != 200:
+                    continue
+                data = r.json()
+                email = (data.get("email") or "").strip()
+                if not email or "@" not in email:
                     continue
                 return email
             except Exception:
@@ -165,7 +190,7 @@ def _run_register_sync(password: str, proxy_url: Optional[str] = None, max_retri
             last_error = "无法获取临时邮箱（所有域名均被屏蔽?）"
             continue
 
-        http = httpx.Client(headers=HEADERS, timeout=15, proxy=proxy_url)
+        http = httpx.Client(headers=HEADERS, timeout=30, proxy=proxy_url)
         try:
             # 2. Register-apply
             r = http.post(
@@ -174,6 +199,7 @@ def _run_register_sync(password: str, proxy_url: Optional[str] = None, max_retri
             )
             resp = r.json()
             if resp.get("code") != 100000:
+                logger.error(f"注册申请失败（第 {attempt+1}/{max_retries} 次）: code={resp.get('code')} msg={resp.get('message', '')}")
                 last_error = f"注册申请失败: {resp}"
                 http.close()
                 time.sleep(2)
@@ -194,6 +220,7 @@ def _run_register_sync(password: str, proxy_url: Optional[str] = None, max_retri
             )
             resp = r.json()
             if resp.get("code") != 100000:
+                logger.warning(f"注册确认失败（第 {attempt+1}/{max_retries} 次）: code={resp.get('code')} msg={resp.get('message', '')}")
                 last_error = f"注册确认失败: {resp}"
                 http.close()
                 continue
@@ -205,12 +232,14 @@ def _run_register_sync(password: str, proxy_url: Optional[str] = None, max_retri
             )
             resp = r.json()
             if resp.get("code") != 100000:
+                logger.warning(f"登录失败（第 {attempt+1}/{max_retries} 次）: code={resp.get('code')} msg={resp.get('message', '')}")
                 last_error = f"登录失败: {resp}"
                 http.close()
                 continue
 
             access_token = resp["data"]["access_token"]
             http.close()
+            logger.info(f"注册成功: {email} (第 {attempt+1}/{max_retries} 次)")
             return {"email": email, "access_token": access_token, "password": password}
 
         except Exception as e:
@@ -219,6 +248,7 @@ def _run_register_sync(password: str, proxy_url: Optional[str] = None, max_retri
             time.sleep(2)
             continue
 
+    logger.warning(f"注册最终失败（已重试 {max_retries} 次）: {last_error}")
     return {"error": f"注册失败（已重试 {max_retries} 次）: {last_error}"}
 
 
@@ -344,7 +374,7 @@ async def auto_register_photogpt(
         email=result["email"],
         access_token=result["access_token"],
         password=result.get("password", password),
-        credits=20,
+        credits=3,
         status="active",
         created_at=now,
         updated_at=now,

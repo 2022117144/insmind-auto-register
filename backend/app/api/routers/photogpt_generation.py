@@ -73,19 +73,25 @@ BROWSER_HEADERS = {
 # 用于 GET 请求（不含 Content-Type，GET 不需要）
 POLL_HEADERS = {k: v for k, v in BROWSER_HEADERS.items() if k.lower() != "content-type"}
 
-# Proxy auto-detect (cached)
+# Proxy auto-detect (cached, with TTL)
 _proxy_url: Optional[dict] = None
 _proxy_checked = False
+_proxy_last_ok = 0.0  # 上次成功检测到代理的时间戳
 def _get_proxy() -> Optional[dict]:
-    global _proxy_url, _proxy_checked
+    global _proxy_url, _proxy_checked, _proxy_last_ok
     if _proxy_checked:
-        return _proxy_url
+        # 如果缓存了 None（无代理），每 30 秒重新检测一次
+        if _proxy_url is None and time.time() - _proxy_last_ok > 30:
+            _proxy_checked = False
+        else:
+            return _proxy_url
     _proxy_checked = True
     for p in [7897, 7890]:
         try:
             s = __import__("socket").create_connection(("127.0.0.1", p), timeout=0.5)
             s.close()
             _proxy_url = {"https": f"http://127.0.0.1:{p}", "http": f"http://127.0.0.1:{p}"}
+            _proxy_last_ok = time.time()
             return _proxy_url
         except:
             continue

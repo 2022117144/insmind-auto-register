@@ -58,15 +58,29 @@ class ClashManager:
         if self._client and not self._client.is_closed:
             await self._client.aclose()
     
+    _cached_clash_status: Optional[bool] = None
+    _cached_clash_time: float = 0
+
     async def check_connection(self) -> bool:
-        """检查 Clash 连接状态"""
+        """检查 Clash 连接状态（缓存 30 秒，不阻塞 Dashboard）"""
+        import time
+        now = time.time()
+        if self._cached_clash_status is not None and now - self._cached_clash_time < 30:
+            return self._cached_clash_status
         try:
-            client = await self.get_client()
+            client = httpx.AsyncClient(
+                base_url=self.base_url,
+                headers=self.headers,
+                timeout=2.0
+            )
             resp = await client.get("/version")
-            return resp.status_code == 200
+            await client.aclose()
+            self._cached_clash_status = resp.status_code == 200
         except Exception as e:
-            logger.error(f"Clash 连接失败: {e}")
-            return False
+            logger.debug(f"Clash 连接失败: {e}")
+            self._cached_clash_status = False
+        self._cached_clash_time = now
+        return self._cached_clash_status
     
     async def get_proxies(self) -> Dict[str, Any]:
         """获取所有代理信息"""

@@ -380,6 +380,7 @@ from app.api.routers import outlook_mailboxes
 from app.api.routers import insmind_accounts
 from app.api.routers import photogpt_accounts
 from app.api.routers import photogpt_generation
+from app.api.routers import logs
 
 app.include_router(tasks.router, prefix="/api/tasks", tags=["任务管理"])
 app.include_router(accounts.router, prefix="/api/accounts", tags=["账号管理"])
@@ -401,6 +402,7 @@ app.include_router(
     photogpt_generation.router, prefix="/api", tags=["PhotoGPT 生成"]
 )
 app.include_router(content_generation.router, prefix="/api/content", tags=["内容生成"])
+app.include_router(logs.router, tags=["日志"])
 
 
 # HEALTH CHECK REMOVED - SERVED BY SPA

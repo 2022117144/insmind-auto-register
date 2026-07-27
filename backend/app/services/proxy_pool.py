@@ -291,10 +291,19 @@ class ProxyPoolManager:
                 break
 
         if not chosen_path:
-            logger.warning(
-                "外部代理文件不存在，已尝试: " + ", ".join(str(p.resolve()) for p in paths_to_try)
-            )
-            return 0
+            # 没有外部代理文件时，尝试使用本地 7897 代理作为默认代理
+            logger.info("未找到外部代理文件，尝试使用本地代理 127.0.0.1:7897")
+            try:
+                s = __import__("socket").create_connection(("127.0.0.1", 7897), timeout=0.5)
+                s.close()
+                await self.load_from_list([
+                    "http://127.0.0.1:7897"
+                ], group="internal", clear_existing=clear_existing)
+                logger.info("已加载本地代理 127.0.0.1:7897")
+                return 1
+            except Exception:
+                logger.debug("本地代理 127.0.0.1:7897 不可用")
+                return 0
 
         logger.info(f"正在尝试加载外部代理文件: {chosen_path.resolve()}")
 
