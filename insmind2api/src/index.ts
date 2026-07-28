@@ -795,8 +795,8 @@ router.post('/v1/videos/generations-image', async (ctx) => {
 
         const hasGenCall = ['Pixverse', 'Wan-2', 'Kling', 'Seedance', 'VEO', 'video-generation'].some(kw => rawData.includes(kw) || finalRawData.includes(kw));
         if (!videoUrl && hasGenCall) {
-            console.log(`⏳ video-generation detected, polling records up to 3 times`);
-            for (let attempt = 0; attempt < 3; attempt++) {
+            console.log(`⏳ video-generation detected, polling records up to 8 times (4 min)`);
+                        for (let attempt = 0; attempt < 8; attempt++) {
                 await new Promise(resolve => setTimeout(resolve, 30000));
                 try {
                     const pollResult = await makeRequest({

@@ -426,6 +426,21 @@ async def create_generation_job(
                         )
                         await bg_db.commit()
 
+                    elif result.code == "processing":
+                        # 仍在处理中，更新状态让前端轮询
+                        await bg_db.execute(
+                            update(ContentGenerationJob).where(
+                                ContentGenerationJob.id == job_id
+                            ).values(
+                                status="processing",
+                                error_message=None,
+                                remote_task_id=job_id,
+                                updated_at=datetime.now(),
+                            )
+                        )
+                        await bg_db.commit()
+                        await _release_insmind_account(bg_db, acct)
+
                     else:
                         # text_reply / failed
                         err_msg = result.message or "未知错误"

@@ -330,6 +330,11 @@ async def auto_register_insmind_account(db: AsyncSession = Depends(get_db)):
     
     注意：此操作需要浏览器交互，耗时约 30-60 秒
     """
+    # 先回滚可能残留的 PendingRollbackError
+    try:
+        await db.rollback()
+    except Exception:
+        pass
     import subprocess
 
     # 直接硬编码项目根目录路径，避免 dirname 层数算错
@@ -355,42 +360,44 @@ async def auto_register_insmind_account(db: AsyncSession = Depends(get_db)):
 
     # 解析输出中的 RESULT JSON
     result = {"success": False, "error": "脚本无输出"}
-    # 查找 JSON 块（紧凑格式）
+    # 查找 --- RESULT --- 后面的 JSON 块
     import re as re_mod
-    json_match = re_mod.search(r'\{[^{}]*"success"[^{}]*\}', output)
-    if json_match:
+    result_marker = "--- RESULT ---"
+    result_idx = output.find(result_marker)
+    if result_idx >= 0:
+        json_str = output[result_idx + len(result_marker):].strip()
         try:
-            result = json.loads(json_match.group())
+            result = json.loads(json_str)
         except Exception:
             result = {"success": False, "error": "解析注册结果失败"}
 
     # 注册成功则存入本库（仅当有 org_id，否则无意义）
-        if result.get("success") and result.get("org_id"):
-            try:
-                refresh_token = result.get("refresh_token", "")
-                if not refresh_token or refresh_token.strip() == "":
-                    logger.warning("⚠️ insMind 未发放 refresh_token（email 注册通常不发），账号将在 8h 后过期")
-                from app.models.insmind_account import InsMindAccount
-                now = datetime.utcnow()
-                account = InsMindAccount(
-                    email=result.get("email", ""),
-                    token=result.get("token", ""),
-                    refresh_token=refresh_token,
-                    user_id=result.get("userId", "") or "",
-                    org_id=result.get("org_id", "") or "",
-                    credits=0,
-                    status="active",
-                    created_at=now,
-                    updated_at=now,
-                )
-                db.add(account)
-                await db.commit()
-                logger.info(f"账号已存入本库: {result.get('email')}")
+    if result.get("success") and result.get("org_id"):
+        try:
+            refresh_token = result.get("refresh_token", "")
+            if not refresh_token or refresh_token.strip() == "":
+                logger.warning("⚠️ insMind 未发放 refresh_token（email 注册通常不发），账号将在 8h 后过期")
+            from app.models.insmind_account import InsMindAccount
+            now = datetime.utcnow()
+            account = InsMindAccount(
+                email=result.get("email", ""),
+                token=result.get("token", ""),
+                refresh_token=refresh_token,
+                user_id=result.get("userId", "") or "",
+                org_id=result.get("org_id", "") or "",
+                credits=0,
+                status="active",
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(account)
+            await db.commit()
+            logger.info(f"账号已存入本库: {result.get('email')}")
 
-                # 注册成功后触发清理过期账号（新注册的 token 是新的，但旧的可能过期了）
-                from app.api.routers.content_generation import _cleanup_dead_accounts
-                await _cleanup_dead_accounts(db)
-            except Exception as e:
+            # 注册成功后触发清理过期账号（新注册的 token 是新的，但旧的可能过期了）
+            from app.api.routers.content_generation import _cleanup_dead_accounts
+            await _cleanup_dead_accounts(db)
+        except Exception as e:
                 logger.error(f"存入本库失败: {e}")
                 await db.rollback()
                 result["success"] = False
@@ -524,6 +531,7 @@ class InsMindGenerateRequest(BaseModel):
     resolution: str = "360P"
     aspect_ratio: str = "16:9"
     image_url: Optional[str] = None
+    image_data_urls: Optional[List[str]] = None
 
 
 class InsMindGenerateResponse(BaseModel):
@@ -629,63 +637,118 @@ async def insmind_generate(
     except Exception as e:
         logger.warning(f"同步到 insmind2api 池失败: {e}")
 
-    # 3. 调用 insmind2api 生成视频
+    # 3. 调用 insmind2api 生成视频（判断文生图还是图生视频）
     try:
-        async with _httpx.AsyncClient(timeout=INMIND_VIDEO_TIMEOUT) as c:
-            resp = await c.post(
-                "http://127.0.0.1:5105/api/v1/videos/generations",
-                json={
-                    "prompt": req.prompt,
-                    "model": req.model,
-                    "duration": req.duration,
-                    "resolution": req.resolution,
-                    "aspect_ratio": req.aspect_ratio,
-                    "image_url": req.image_url,
-                },
-            )
-
-        if resp.status_code == 200:
-            data = resp.json()
-            task_id = data.get("id", "")
-            video_url = data.get("video_url")
-            logger.info(f"视频生成已提交: task_id={task_id}, 账号={api_email}")
-
-            # 🔥 生成成功 → 删除账号
-            if video_url:
-                try:
-                    await db.delete(account)
-                    await db.commit()
-                    logger.info(f"🗑️ 已从 DB 删除 {api_email}")
-                    async with _httpx.AsyncClient(timeout=5.0) as _c:
-                        pr = await _c.get("http://127.0.0.1:5105/api/accounts")
-                        if pr.status_code == 200:
-                            rem = [a for a in pr.json().get("accounts", []) if a.get("email") != api_email]
-                            await _c.post("http://127.0.0.1:5105/api/accounts/sync", json={"accounts": rem})
-                            logger.info(f"🗑️ 已从池删除 {api_email} (剩 {len(rem)} 个)")
-                except Exception as del_err:
-                    logger.warning(f"⚠️ 删账号异常: {del_err}")
-                return InsMindGenerateResponse(
-                    success=True, task_id=task_id, video_url=video_url, error=None,
+        has_images = bool(req.image_data_urls) or bool(req.image_url)
+        logger.info(f"DEBUG has_images={has_images}, image_data_urls={bool(req.image_data_urls)}, image_url={bool(req.image_url)}")
+        if has_images:
+                # 图生视频：先通过 insmind_gen 上传图片到 OSS 再提交
+                from app.services.insmind_gen import generate_image_to_video
+                img_result = await generate_image_to_video(
+                    email=api_email,
+                    token=api_token,
+                    user_id=account.user_id or "",
+                    org_id=account.org_id or "",
+                    prompt=req.prompt,
+                    model=req.model,
+                    duration=req.duration,
+                    resolution=req.resolution,
+                    aspect_ratio=req.aspect_ratio,
+                    image_data_urls=req.image_data_urls or ([req.image_url] if req.image_url else []),
                 )
-            else:
-                await _release()
-                # 尝试解析 insMind 返回的响应，判断是否被审核拦截
-                data_str = str(data) if isinstance(data, dict) else ""
-                if not data_str.strip() or data_str.strip() in ("{}", "[]"):
-                    err_msg = "insMind 未返回任何响应（可能被内容审核拦截，请尝试修改提示词）"
-                elif '"type":"plain"' in data_str:
-                    err_msg = "insMind 返回文本信息而非视频（可能被审核拦截）"
-                elif "invalid_access_token" in data_str.lower():
-                    err_msg = "账号 token 已过期，请重新注册"
+                if img_result.code == "success" and img_result.video_url:
+                    video_url = img_result.video_url
+                    task_id = img_result.task_id or ""
+                    logger.info(f"图生视频成功: task_id={task_id}, video_url={video_url[:60]}...")
+                    # 生成成功 → 删除账号
+                    try:
+                        await db.delete(account)
+                        await db.commit()
+                        logger.info(f"🗑️ 已从 DB 删除 {api_email}")
+                    except Exception as del_err:
+                        logger.warning(f"⚠️ 删账号异常: {del_err}")
+                    return InsMindGenerateResponse(
+                        success=True, task_id=task_id, video_url=video_url, error=None,
+                    )
+                elif img_result.code == "processing":
+                    # 仍在生成中，不删除账号，释放锁让其他任务可用
+                    await _release()
+                    logger.info(f"图生视频处理中: task_id={img_result.task_id}, message={img_result.message}")
+                    return InsMindGenerateResponse(
+                        success=False, task_id=img_result.task_id or "",
+                        error=img_result.message or "视频仍在生成中",
+                        timeout=False,
+                    )
                 else:
-                    err_msg = "insMind 未返回视频 URL"
-                logger.warning(f"⚠️ 视频生成未返回 URL: {err_msg}")
-                return InsMindGenerateResponse(success=False, error=err_msg)
+                    await _release()
+                    err_msg = img_result.message or "insMind 图生视频失败"
+                    logger.warning(f"⚠️ 图生视频失败: {err_msg}")
+                    return InsMindGenerateResponse(success=False, error=err_msg)
         else:
-            error_detail = resp.text[:200]
-            logger.error(f"视频生成失败 ({resp.status_code}): {error_detail}")
-            await _release()
-            return InsMindGenerateResponse(success=False, error=error_detail)
+            # 文生视频
+            async with _httpx.AsyncClient(timeout=INMIND_VIDEO_TIMEOUT) as c:
+                resp = await c.post(
+                    "http://127.0.0.1:5105/api/v1/videos/generations",
+                    json={
+                        "prompt": req.prompt,
+                        "model": req.model,
+                        "duration": req.duration,
+                        "resolution": req.resolution,
+                        "aspect_ratio": req.aspect_ratio,
+                    },
+                )
+
+            if resp.status_code == 200:
+                data = resp.json()
+                task_id = data.get("id", "")
+                video_url = data.get("video_url")
+                logger.info(f"视频生成已提交: task_id={task_id}, 账号={api_email}")
+
+                # 🔥 生成成功 → 删除账号
+                if video_url:
+                    try:
+                        await db.delete(account)
+                        await db.commit()
+                        logger.info(f"🗑️ 已从 DB 删除 {api_email}")
+                        async with _httpx.AsyncClient(timeout=5.0) as _c:
+                            pr = await _c.get("http://127.0.0.1:5105/api/accounts")
+                            if pr.status_code == 200:
+                                rem = [a for a in pr.json().get("accounts", []) if a.get("email") != api_email]
+                                await _c.post("http://127.0.0.1:5105/api/accounts/sync", json={"accounts": rem})
+                                logger.info(f"🗑️ 已从池删除 {api_email} (剩 {len(rem)} 个)")
+                    except Exception as del_err:
+                        logger.warning(f"⚠️ 删账号异常: {del_err}")
+                    return InsMindGenerateResponse(
+                        success=True, task_id=task_id, video_url=video_url, error=None,
+                    )
+                else:
+                    await _release()
+                    # 尝试解析 insMind 返回的响应，判断是否被审核拦截
+                    data_str = str(data) if isinstance(data, dict) else ""
+                    if not data_str.strip() or data_str.strip() in ("{}", "[]"):
+                        err_msg = "insMind 未返回任何响应（可能被内容审核拦截，请尝试修改提示词）"
+                    elif '"type":"plain"' in data_str:
+                        err_msg = "insMind 返回文本信息而非视频（可能被审核拦截）"
+                    elif "invalid_access_token" in data_str.lower():
+                        err_msg = "账号 token 已过期，请重新注册"
+                    else:
+                        err_msg = "insMind 未返回视频 URL"
+                    logger.warning(f"⚠️ 视频生成未返回 URL: {err_msg}")
+                    return InsMindGenerateResponse(success=False, error=err_msg)
+            else:
+                error_detail = resp.text[:200]
+                logger.error(f"视频生成失败 ({resp.status_code}): {error_detail}")
+                await _release()
+                return InsMindGenerateResponse(success=False, error=error_detail)
+
+    except _httpx.TimeoutException:
+        await _release()
+        logger.warning(f"⚠️ 视频生成超时 ({INMIND_VIDEO_TIMEOUT}s)")
+        return InsMindGenerateResponse(success=False, error=f"insMind 生成超时（超过 {INMIND_VIDEO_TIMEOUT} 秒），请稍后查看是否生成", timeout=True)
+    except Exception as e:
+        await _release()
+        logger.error(f"视频生成异常: {e}")
+        return InsMindGenerateResponse(success=False, error=str(e))
 
     except _httpx.TimeoutException:
         await _release()

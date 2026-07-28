@@ -83,12 +83,21 @@ def _parse_insmind_response(data: dict) -> InsMindResult:
     video_url = data.get("video_url")
     task_id = data.get("id", "")
     raw_response = data.get("response", "")
+    status = data.get("status", "")
 
     # 有视频 URL → 成功
     if video_url:
         return InsMindResult(
             code="success", video_url=video_url,
             task_id=task_id, raw_response=raw_response,
+        )
+
+    # 状态为 processing → 仍在处理中，不是失败
+    if status == "processing":
+        return InsMindResult(
+            code="processing", task_id=task_id,
+            raw_response=raw_response,
+            message="视频仍在生成中",
         )
 
     # function_call 检测
@@ -374,12 +383,22 @@ async def _upload_to_oss(
     auth = f'OSS {sts["access_key_id"]}:{sig}'
     url = f'https://{bucket}.oss-accelerate.aliyuncs.com/{key}'
     cdn_url = f'{sts["host"]}/{key}'
-    oss_ip = "47.253.30.33"  # oss-accelerate.aliyuncs.com 的 IP
-
-    # 4. 写临时文件，用 curl.exe 上传（直连 + --resolve 绕过 DNS）
-    hostname = f'{bucket}.oss-accelerate.aliyuncs.com'
-    tmp = tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False)
+    oss_ip = ""  # 动态解析
     import subprocess as _sp
+
+    # 4. 写临时文件，用 curl.exe 上传（使用 STS 返回的区域域名，避免加速域名 DNS 劫持）
+    # 优先使用 standby_endpoint 或 inner_endpoint 中的区域域名
+    region_endpoint = sts.get("standby_endpoint", "") or sts.get("inner_endpoint", "")
+    if region_endpoint:
+        # 从 endpoint URL 中提取 hostname，如 https://oss-us-east-1.aliyuncs.com
+        hostname = region_endpoint.replace("https://", "").replace("http://", "")
+    else:
+        # 回退到从 region 字段构建
+        region = sts.get("region", "oss-us-east-1")
+        hostname = f"{region}.aliyuncs.com"
+    logger.info(f"OSS 上传目标: {hostname}")
+
+    tmp = tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False)
     try:
         tmp.write(img_bytes)
         tmp.close()
@@ -396,7 +415,6 @@ async def _upload_to_oss(
              "-H", f"x-oss-security-token: {sts['security_token']}",
              "--data-binary", f"@{tmp.name}",
              "--insecure",
-             "--resolve", f"{hostname}:443:{oss_ip}",
              url],
             capture_output=True, text=True, timeout=35)
 
