@@ -338,6 +338,9 @@ export interface AccountStats {
     pending: number
     success_rate: number
     matched: number
+    active?: number
+    expired?: number
+    banned?: number
 }
 
 // ============ insMind Accounts API ============

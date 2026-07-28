@@ -323,6 +323,36 @@ async def register() -> dict:
                                 break
 
                     if not result.get("org_id"):
+                        # 回退：调 API 触发 lazy creation（重试 3 次）
+                        inner = at  # access_token
+                        uid = result.get("userId", "")
+                        for retry in range(3):
+                            logger.info(f"调 rewards API 触发 lazy creation (第 {retry+1} 次)...")
+                            try:
+                                api_result = await page.evaluate(f"""async () => {{
+                                    try {{
+                                        const r = await fetch("https://www.insmind.com/api/gaoding-art/v1/rewards/user/info", {{
+                                            headers:{{"Authorization":"Bearer {inner}","x-user-id":"{uid}",
+                                                "x-product-type":"INDIVIDUAL_FREE","x-channel-id":"781"}}
+                                        }});
+                                        return await r.text().then(t => t.substring(0,300));
+                                    }} catch(e) {{ return "ERR:" + e.message; }}
+                                }}""")
+                                logger.info(f"rewards API: {api_result[:100]}")
+                                await page.wait_for_timeout(5000)
+                                cookies = await ctx.cookies()
+                                for c in cookies:
+                                    if "org_id" in c["name"]:
+                                        result["org_id"] = c["value"]
+                                        logger.info(f"已激活租户(API触发), org_id={c['value'][:30]}...")
+                                        break
+                                if result.get("org_id"):
+                                    break
+                            except Exception as e:
+                                logger.warning(f"rewards API 第 {retry+1} 次失败: {e}")
+                                await page.wait_for_timeout(5000)
+
+                    if not result.get("org_id"):
                         logger.warning("⚠️ 访问 creation 后未获取到 org_id cookie")
                 except Exception as e:
                     logger.warning(f"激活租户过程异常（不影响注册）: {e}")

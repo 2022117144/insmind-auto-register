@@ -365,33 +365,36 @@ async def auto_register_insmind_account(db: AsyncSession = Depends(get_db)):
             result = {"success": False, "error": "解析注册结果失败"}
 
     # 注册成功则存入本库（仅当有 org_id，否则无意义）
-    if result.get("success") and result.get("org_id"):
-        try:
-            refresh_token = result.get("refresh_token", "")
-            if not refresh_token or refresh_token.strip() == "":
-                logger.warning("⚠️ insMind 未发放 refresh_token（email 注册通常不发），账号将在 8h 后过期")
-            from app.models.insmind_account import InsMindAccount
-            now = datetime.utcnow()
-            account = InsMindAccount(
-                email=result.get("email", ""),
-                token=result.get("token", ""),
-                refresh_token=refresh_token,
-                user_id=result.get("userId", "") or "",
-                org_id=result.get("org_id", "") or "",
-                credits=0,
-                status="active",
-                created_at=now,
-                updated_at=now,
-            )
-            db.add(account)
-            await db.commit()
-            logger.info(f"账号已存入本库: {result.get('email')}")
-        except Exception as e:
-            logger.error(f"存入本库失败: {e}")
-            await db.rollback()
-            result["success"] = False
-            result["error"] = str(e)
+        if result.get("success") and result.get("org_id"):
+            try:
+                refresh_token = result.get("refresh_token", "")
+                if not refresh_token or refresh_token.strip() == "":
+                    logger.warning("⚠️ insMind 未发放 refresh_token（email 注册通常不发），账号将在 8h 后过期")
+                from app.models.insmind_account import InsMindAccount
+                now = datetime.utcnow()
+                account = InsMindAccount(
+                    email=result.get("email", ""),
+                    token=result.get("token", ""),
+                    refresh_token=refresh_token,
+                    user_id=result.get("userId", "") or "",
+                    org_id=result.get("org_id", "") or "",
+                    credits=0,
+                    status="active",
+                    created_at=now,
+                    updated_at=now,
+                )
+                db.add(account)
+                await db.commit()
+                logger.info(f"账号已存入本库: {result.get('email')}")
 
+                # 注册成功后触发清理过期账号（新注册的 token 是新的，但旧的可能过期了）
+                from app.api.routers.content_generation import _cleanup_dead_accounts
+                await _cleanup_dead_accounts(db)
+            except Exception as e:
+                logger.error(f"存入本库失败: {e}")
+                await db.rollback()
+                result["success"] = False
+                result["error"] = str(e)
     # 查当前池子总数
     pool_total = 0
     try:

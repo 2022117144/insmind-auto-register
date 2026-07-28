@@ -6,9 +6,11 @@ import {
     RefreshCw,
     Sparkles,
     Loader2,
+    ChevronLeft,
+    ChevronRight,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { photogptAccountsApi, PhotoGPTAccount } from '../services/api'
+import { photogptAccountsApi, PhotoGPTAccount, AccountStats } from '../services/api'
 import { cn } from '@/lib/utils'
 import { useLanguage } from '@/contexts/LanguageContext'
 import { Button } from "@/components/ui/button"
@@ -39,15 +41,20 @@ import {
 } from "@/components/ui/select"
 import { Card, CardContent } from "@/components/ui/card"
 
+const PAGE_SIZE = 50
+
 // Module-level cache
 let cachedAccounts: PhotoGPTAccount[] = []
 let cachedFilterStatus = 'all'
+let cachedPage = 1
 
 export default function PhotoGPTAccounts() {
     const [accounts, setAccounts] = useState<PhotoGPTAccount[]>(cachedAccounts)
+    const [stats, setStats] = useState<AccountStats | null>(null)
     const [loading, setLoading] = useState(cachedAccounts.length === 0)
     const [searchQuery, setSearchQuery] = useState('')
     const [filterStatus, setFilterStatus] = useState(cachedFilterStatus)
+    const [page, setPage] = useState(cachedPage)
     const [copiedId, setCopiedId] = useState<number | null>(null)
     const [registering, setRegistering] = useState(false)
     const [batchRegistering, setBatchRegistering] = useState(false)
@@ -55,12 +62,15 @@ export default function PhotoGPTAccounts() {
     const [autoDelete, setAutoDelete] = useState(true)
     const { t } = useLanguage()
 
+    const totalPages = stats?.total ? Math.ceil(stats.total / PAGE_SIZE) : 1
+
     useEffect(() => {
         fetchAccounts()
+        fetchStats()
         photogptAccountsApi.getSettings().then(cfg => {
             if (cfg) setAutoDelete(cfg.auto_delete_on_exhaust)
         }).catch(() => {})
-    }, [filterStatus])
+    }, [filterStatus, page])
 
     const toggleAutoDelete = async () => {
         const next = !autoDelete
@@ -73,10 +83,12 @@ export default function PhotoGPTAccounts() {
     }
 
     const fetchAccounts = async () => {
-    setLoading(true)
-    try {
+        setLoading(true)
+        try {
             const data = await photogptAccountsApi.list({
                 status: filterStatus !== 'all' ? filterStatus : undefined,
+                page,
+                page_size: PAGE_SIZE,
             })
             cachedAccounts = data
             setAccounts(data)
@@ -88,12 +100,22 @@ export default function PhotoGPTAccounts() {
         }
     }
 
+    const fetchStats = async () => {
+        try {
+            const data = await photogptAccountsApi.getStats()
+            setStats(data)
+        } catch (err) {
+            console.error('获取 PhotoGPT 统计失败', err)
+        }
+    }
+
     const handleDelete = async (id: number) => {
         if (!confirm(t('common.confirm_delete'))) return
         try {
             await photogptAccountsApi.delete(id)
             toast.success('已删除')
             fetchAccounts()
+            fetchStats()
         } catch (error: any) {
             toast.error(error.message || '删除失败')
         }
@@ -112,6 +134,7 @@ export default function PhotoGPTAccounts() {
             if (result.success) {
                 toast.success(`注册成功: ${result.email} (池子共 ${result.pool_total} 个账号)`)
                 fetchAccounts()
+                fetchStats()
             } else {
                 toast.error(result.error || '注册失败')
             }
@@ -128,6 +151,7 @@ export default function PhotoGPTAccounts() {
             const result = await photogptAccountsApi.autoRegisterBatch(3)
             toast.success(`批量注册完成: ${result.success}/${result.total} 成功`)
             fetchAccounts()
+            fetchStats()
         } catch (error: any) {
             toast.error(error.message || '批量注册失败')
         } finally {
@@ -143,6 +167,7 @@ export default function PhotoGPTAccounts() {
             toast.success(`已删除 ${result.deleted} 个账号`)
             setSelectedIds(new Set())
             fetchAccounts()
+            fetchStats()
         } catch (error: any) {
             toast.error(error.message || '批量删除失败')
         }
@@ -161,6 +186,13 @@ export default function PhotoGPTAccounts() {
         } else {
             setSelectedIds(new Set(filteredAccounts.map(a => a.id)))
         }
+    }
+
+    const goToPage = (p: number) => {
+        if (p < 1 || p > totalPages) return
+        setPage(p)
+        cachedPage = p
+        setSelectedIds(new Set())
     }
 
     const statusBadge = (status: string) => {
@@ -185,6 +217,23 @@ export default function PhotoGPTAccounts() {
         ? accounts.filter(a => a.email.toLowerCase().includes(searchQuery.toLowerCase()))
         : accounts
 
+    // Build page numbers for pagination
+    const getPageNumbers = () => {
+        const pages: (number | '...')[] = []
+        if (totalPages <= 7) {
+            for (let i = 1; i <= totalPages; i++) pages.push(i)
+        } else {
+            pages.push(1)
+            if (page > 3) pages.push('...')
+            const start = Math.max(2, page - 1)
+            const end = Math.min(totalPages - 1, page + 1)
+            for (let i = start; i <= end; i++) pages.push(i)
+            if (page < totalPages - 2) pages.push('...')
+            pages.push(totalPages)
+        }
+        return pages
+    }
+
     return (
         <div className="flex-1 space-y-6 animate-in fade-in duration-500">
             {/* Header */}
@@ -194,7 +243,7 @@ export default function PhotoGPTAccounts() {
                     <p className="text-muted-foreground">{t('photogpt.accounts.subtitle')}</p>
                 </div>
                 <div className="flex items-center gap-2">
-                    <Button variant="outline" size="sm" onClick={fetchAccounts} disabled={loading} className="h-9 border-white/5 bg-card/40 rounded-[10px]">
+                    <Button variant="outline" size="sm" onClick={() => { fetchAccounts(); fetchStats(); }} disabled={loading} className="h-9 border-white/5 bg-card/40 rounded-[10px]">
                         <RefreshCw className={cn("mr-2 h-4 w-4", loading && "animate-spin")} />
                         {t('common.sync')}
                     </Button>
@@ -230,10 +279,10 @@ export default function PhotoGPTAccounts() {
             {/* Stats Cards */}
             <div className="grid grid-cols-4 gap-4">
                 {[
-                    { label: '全部', value: accounts.length, color: 'text-sky-400' },
-                    { label: t('photogpt.accounts.status.active'), value: accounts.filter(a => a.status === 'active').length, color: 'text-emerald-400' },
-                    { label: t('photogpt.accounts.status.expired'), value: accounts.filter(a => a.status === 'expired').length, color: 'text-amber-400' },
-                    { label: t('photogpt.accounts.status.banned'), value: accounts.filter(a => a.status === 'banned').length, color: 'text-red-400' },
+                    { label: '全部', value: stats?.total ?? accounts.length, color: 'text-sky-400' },
+                    { label: t('photogpt.accounts.status.active'), value: stats?.active ?? accounts.filter(a => a.status === 'active').length, color: 'text-emerald-400' },
+                    { label: t('photogpt.accounts.status.expired'), value: stats?.expired ?? accounts.filter(a => a.status === 'expired').length, color: 'text-amber-400' },
+                    { label: t('photogpt.accounts.status.banned'), value: stats?.banned ?? accounts.filter(a => a.status === 'banned').length, color: 'text-red-400' },
                 ].map((stat) => (
                     <Card key={stat.label} className="border border-white/5 bg-card/40 backdrop-blur rounded-[1.5rem]">
                         <CardContent className="p-4 flex items-center gap-3">
@@ -268,7 +317,7 @@ export default function PhotoGPTAccounts() {
                         className="pl-10 h-9 bg-card/40 border-white/5 rounded-[10px]"
                     />
                 </div>
-                <Select value={filterStatus} onValueChange={v => { setFilterStatus(v); cachedFilterStatus = v }}>
+                <Select value={filterStatus} onValueChange={v => { setFilterStatus(v); cachedFilterStatus = v; setPage(1); cachedPage = 1 }}>
                     <SelectTrigger className="w-[130px] h-9 bg-card/40 border-white/5 rounded-[10px]">
                         <SelectValue placeholder={t('common.all')} />
                     </SelectTrigger>
@@ -395,6 +444,50 @@ export default function PhotoGPTAccounts() {
                     </TableBody>
                 </Table>
             </div>
+
+            {/* Pagination */}
+            {totalPages > 1 && (
+                <div className="flex items-center justify-center gap-1">
+                    <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={page <= 1}
+                        onClick={() => goToPage(page - 1)}
+                        className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
+                    >
+                        <ChevronLeft className="h-4 w-4" />
+                    </Button>
+                    {getPageNumbers().map((p, i) =>
+                        p === '...' ? (
+                            <span key={`ellipsis-${i}`} className="px-2 text-muted-foreground/40 text-sm">...</span>
+                        ) : (
+                            <Button
+                                key={p}
+                                variant={page === p ? 'default' : 'ghost'}
+                                size="sm"
+                                onClick={() => goToPage(p)}
+                                className={cn(
+                                    "h-8 w-8 p-0 text-sm",
+                                    page === p
+                                        ? "bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30"
+                                        : "text-muted-foreground hover:text-foreground"
+                                )}
+                            >
+                                {p}
+                            </Button>
+                        )
+                    )}
+                    <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={page >= totalPages}
+                        onClick={() => goToPage(page + 1)}
+                        className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
+                    >
+                        <ChevronRight className="h-4 w-4" />
+                    </Button>
+                </div>
+            )}
         </div>
     )
 }
