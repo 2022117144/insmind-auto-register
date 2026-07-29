@@ -125,12 +125,12 @@ function getNextAccount(): InsMindAccount | null {
 // Scene code mapping
 const SCENE_CODE_MAP: Record<string, string> = {
     'Pixverse-V6.0': 'Pixversev60',
-    'Wan-2.7': 'Wan27',
-    'Wan-2.2': 'Wan22',
-    'Kling-3.0': 'Kling30',
-    'Seedance-2.0': 'Seedance20',
-    'Seedance-2.0-Mini': 'Seedance20Mini',
-    'VEO-3.1': 'VEO31',
+    'Wan-2.7': 'agent-Wan-27',
+    'Wan-2.2': 'agent-Wan-22',
+    'Kling-3.0': 'agent-Kling-30',
+    'Seedance-2.0': 'agent-Seedance-2-0',
+    'Seedance-2.0-Mini': 'agent-Seedance-2-0-Mini',
+    'VEO-3.1': 'agent-Veo31',
 };
 
 // ============ Helpers ============
@@ -751,45 +751,44 @@ router.post('/v1/videos/generations-image', async (ctx) => {
     let threadId = threadMatch ? threadMatch[1] : '';
 
     if (threadId) {
-        console.log(`💬 Confirming function_call on thread ${threadId}`);
-        const confirmPayload = JSON.parse(JSON.stringify(convPayload));
-        confirmPayload.thread_id = threadId;
-        confirmPayload.local_message_id = `${taskId}-confirm`;
-        confirmPayload.content.prompt = [
-            { type: 'text', content: `Yes, use ${model} to generate the video now. ${prompt}` }
-        ];
+            console.log(`💬 Confirming function_call on thread ${threadId}`);
+            const confirmPayload = JSON.parse(JSON.stringify(convPayload));
+            confirmPayload.thread_id = threadId;
+            confirmPayload.local_message_id = `${taskId}-confirm`;
+            confirmPayload.content.prompt = [
+                { type: 'text', content: `EXECUTE NOW. Use ${model} to generate the video immediately. Do NOT ask for confirmation again. Settings: resolution=${resolution}, duration=${duration}s. Prompt: ${prompt}` }
+            ];
 
-        try {
-                    const confirmResult = await sseFetch('https://sse.insmind.com/api/ai-agent/v1/thread/completion', JSON.stringify(confirmPayload), sseHeaders, 300000);
-                    console.log(`📡 SSE response (2nd): ${confirmResult.length} chars`);
-                    // Update rawData with confirmation result for video URL extraction
-                    if (confirmResult.length > 0) rawData = confirmResult;
-        } catch (confirmErr: any) {
-            console.error(`❌ SSE confirmation failed: ${confirmErr.message}`);
-        }
-    }
+            try {
+                        const confirmResult = await sseFetch('https://sse.insmind.com/api/ai-agent/v1/thread/completion', JSON.stringify(confirmPayload), sseHeaders, 300000);
+                        console.log(`📡 SSE response (2nd): ${confirmResult.length} chars`);
+                        // Update rawData with confirmation result for video URL extraction
+                        if (confirmResult.length > 0) rawData = confirmResult;
+            } catch (confirmErr: any) {
+                console.error(`❌ SSE confirmation failed: ${confirmErr.message}`);
+            }
 
-    // Step 6: Detect if 2nd SSE is still a function_call (Seedance multi-turn pattern)
-    if (rawData && (rawData.includes('"type":"function_call"') || rawData.includes('"type": "function_call"')) && threadId) {
-        console.log(`💬 Third confirmation on thread ${threadId} (Seedance multi-turn)`);
-        const thirdPayload = JSON.parse(JSON.stringify(convPayload));
-        thirdPayload.thread_id = threadId;
-        thirdPayload.local_message_id = `${taskId}-third`;
-        thirdPayload.content.prompt = [
-            { type: 'text', content: `Yes, execute ${model} now. ${prompt}` }
-        ];
-        try {
-            const thirdResult = await sseFetch(
-                'https://sse.insmind.com/api/ai-agent/v1/thread/completion',
-                JSON.stringify(thirdPayload), sseHeaders, 300000
-            );
-            console.log(`📡 SSE response (3rd): ${thirdResult.length} chars`);
-            console.log(`📄 SSE snippet (3rd): ${thirdResult.substring(0, 500)}`);
-            if (thirdResult.length > 0) rawData = thirdResult;
-        } catch (thirdErr: any) {
-            console.error(`❌ SSE third confirmation failed: ${thirdErr.message}`);
+            // If still function_call, send one more forceful command (no more retries after this)
+            if (rawData && (rawData.includes('"type":"function_call"') || rawData.includes('"type": "function_call"'))) {
+                console.log(`💬 Forceful final confirmation on thread ${threadId}`);
+                const finalPayload = JSON.parse(JSON.stringify(convPayload));
+                finalPayload.thread_id = threadId;
+                finalPayload.local_message_id = `${taskId}-final`;
+                finalPayload.content.prompt = [
+                    { type: 'text', content: `I said EXECUTE ${model} NOW. Generate the video. Do not ask again. ${prompt}` }
+                ];
+                try {
+                    const finalResult = await sseFetch(
+                        'https://sse.insmind.com/api/ai-agent/v1/thread/completion',
+                        JSON.stringify(finalPayload), sseHeaders, 300000
+                    );
+                    console.log(`📡 SSE response (final): ${finalResult.length} chars`);
+                    if (finalResult.length > 0) rawData = finalResult;
+                } catch (finalErr: any) {
+                    console.error(`❌ Final confirmation failed: ${finalErr.message}`);
+                }
+            }
         }
-    }
 
     // Step 7: Try to extract video URL or poll records
     try {
