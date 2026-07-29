@@ -381,9 +381,6 @@ async def _upload_to_oss(
         hmac.new(sts["access_key_secret"].encode(), string_to_sign.encode(), hashlib.sha1).digest()
     ).decode()
     auth = f'OSS {sts["access_key_id"]}:{sig}'
-    url = f'https://{bucket}.oss-accelerate.aliyuncs.com/{key}'
-    cdn_url = f'{sts["host"]}/{key}'
-    oss_ip = ""  # 动态解析
     import subprocess as _sp
 
     # 4. 写临时文件，用 curl.exe 上传（使用 STS 返回的区域域名，避免加速域名 DNS 劫持）
@@ -396,7 +393,10 @@ async def _upload_to_oss(
         # 回退到从 region 字段构建
         region = sts.get("region", "oss-us-east-1")
         hostname = f"{region}.aliyuncs.com"
+    url = f"https://{bucket}.{hostname}/{key}"
+    cdn_url = f'{sts["host"]}/{key}'
     logger.info(f"OSS 上传目标: {hostname}")
+
 
     tmp = tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False)
     try:
