@@ -685,14 +685,50 @@ async def insmind_generate(
                         success=True, task_id=task_id, video_url=video_url, error=None,
                     )
                 elif img_result.code == "processing":
-                    # 仍在生成中，不删除账号，释放锁让其他任务可用
-                    await _release()
-                    logger.info(f"图生视频处理中: task_id={img_result.task_id}, message={img_result.message}")
-                    return InsMindGenerateResponse(
-                        success=False, task_id=img_result.task_id or "",
-                        error=img_result.message or "视频仍在生成中",
-                        timeout=False,
-                    )
+                    # 请求已提交到 insMind，额度已消耗，直接删除账号
+                    try:
+                        await db.delete(account)
+                        await db.commit()
+                        logger.info(f"🗑️ 已从 DB 删除 {api_email}（额度已消耗）")
+                    except Exception as del_err:
+                        logger.warning(f"⚠️ 删账号异常: {del_err}")
+                    # 轮询 5105 获取视频（最多 8 次 x 30 秒 = 4 分钟）
+                    task_id = img_result.task_id or ""
+                    logger.info(f"图生视频处理中，开始轮询 task_id={task_id}")
+                    video_url = None
+                    for attempt in range(8):
+                        await asyncio.sleep(30)
+                        try:
+                            async with _httpx.AsyncClient(timeout=10.0) as poll_c:
+                                poll_resp = await poll_c.get(f"http://127.0.0.1:5105/api/v1/tasks/{task_id}")
+                                if poll_resp.status_code == 200:
+                                    poll_data = poll_resp.json()
+                                    if poll_data.get("status") == "completed":
+                                        record = poll_data.get("record", {})
+                                        video_url = record.get("generation_result") or 
+                                            next((a.get("url") for a in (record.get("assets") or []) if ".mp4" in (a.get("url") or "")), None) or 
+                                            record.get("result_ext", {}).get("content_url")
+                                        if video_url:
+                                            logger.info(f"✅ 轮询成功获取视频: {video_url[:60]}...")
+                                            break
+                        except Exception as poll_err:
+                            logger.warning(f"轮询 task_id={task_id} 失败: {poll_err}")
+                    if video_url:
+                        return InsMindGenerateResponse(
+                            success=True, task_id=task_id, video_url=video_url, error=None,
+                        )
+                    else:
+                        return InsMindGenerateResponse(
+                            success=False, task_id=task_id,
+                            error="视频生成超时（4分钟），请稍后查看",
+                            timeout=True,
+                        )
+                                    else:
+                                        return InsMindGenerateResponse(
+                                            success=False, task_id=task_id,
+                                            error="视频生成超时（4分钟），请稍后查看",
+                                            timeout=True,
+                                        )
                 else:
                     await _release()
                     err_msg = img_result.message or "insMind 图生视频失败"

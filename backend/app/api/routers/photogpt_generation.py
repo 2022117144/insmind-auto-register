@@ -767,12 +767,11 @@ async def photogpt_image_proxy(url: str = Query(...)):
             headers={"Cache-Control": "public, max-age=86400", "X-Cache": "HIT"},
         )
 
-    # 统一走代理（CDN 也需要 proxy 绕过 Cloudflare）
+    # 走代理加载 CDN 图片（直连被墙）
     p = _get_proxy()
-    # httpx 0.28.x 要求 proxy 为字符串（非 dict），从 _get_proxy() 返回的 dict 中取值
     proxy_url = str(p.get("https") or p.get("http")) if p else None
     try:
-        async with httpx.AsyncClient(proxy=proxy_url, timeout=15.0, follow_redirects=True) as c:
+        async with httpx.AsyncClient(proxy=proxy_url, timeout=30.0, follow_redirects=True) as c:
             resp = await c.get(url, headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "Referer": "https://photogpt.io/",
