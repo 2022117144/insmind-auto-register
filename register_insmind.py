@@ -297,11 +297,11 @@ async def register() -> dict:
                         "path": "/",
                     }])
 
-                    # 在新页面访问 creation 激活 tenant（domcontentloaded + 等待 cookie 设置）
+                    # 在新页面访问 creation 激活 tenant（load + 等待 cookie 设置，不等 networkidle 避免卡死）
                     create_page = await ctx.new_page()
                     await create_page.goto("https://www.insmind.com/creation",
-                                           wait_until="domcontentloaded", timeout=60000)
-                    await create_page.wait_for_timeout(10000)
+                                           wait_until="load", timeout=30000)
+                    await create_page.wait_for_timeout(15000)
                     await create_page.close()
 
                     # 收集所有 cookie 找 org_id
