@@ -165,10 +165,12 @@ async def _upload_data_urls(data_urls: list[str], nc_token: str = "") -> list[st
                 if r2.status_code != 200:
                     raise Exception(f"OSS upload failed: {r2.status_code}")
 
-                # 3. 构建 CDN 相对路径（input_urls 需要这个格式）
-                from datetime import date
-                today = date.today().strftime("%Y/%m/%d")
-                cdn_path = f"/photogpt/user-upload/{today}/{saved_filename}"
+                # 3. 从签名 URL 提取真实日期路径，构建 CDN 相对路径
+                # 签名 URL 格式: .../photogpt/user-upload/2026/07/28/filename.png?...
+                import re
+                _date_match = re.search(r"/photogpt/user-upload/(\d{4}/\d{2}/\d{2})/", upload_url)
+                _date_str = _date_match.group(1) if _date_match else date.today().strftime("%Y/%m/%d")
+                cdn_path = f"/photogpt/user-upload/{_date_str}/{saved_filename}"
                 result.append(cdn_path)
                 logger.info(f"📤 PhotoGPT CDN upload OK: {cdn_path}")
 

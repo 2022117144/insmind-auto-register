@@ -636,6 +636,7 @@ async def insmind_generate(
     try:
         async with _httpx.AsyncClient(timeout=5.0) as c:
             pool = await c.get("http://127.0.0.1:5105/api/accounts")
+            logger.info(f"DEBUG 5105 pool status={pool.status_code}, body={pool.text[:200]}")
             if pool.status_code == 200:
                 pool_accounts = pool.json().get("accounts", [])
                 if not any(a.get("email") == api_email for a in pool_accounts):
