@@ -390,8 +390,8 @@ async def main():
     args = parser.parse_args()
     logger.info("=== insMind 自动注册 ===")
     result = await register()
-    print("\n--- RESULT ---")
-    print(json.dumps({k: v for k, v in result.items()}, separators=(",", ":"), ensure_ascii=False))
+    sys.stdout.write("\n--- RESULT ---\n")
+    sys.stdout.write(json.dumps({k: v for k, v in result.items()}, separators=(",", ":"), ensure_ascii=False) + "\n")
     sys.stdout.flush()
     if result["success"] and args.auto_add and result["token"] and result.get("org_id"):
         await add_to_pool(result["email"], result["token"], result["userId"] or "", result.get("refresh_token", ""), result.get("org_id", ""))
