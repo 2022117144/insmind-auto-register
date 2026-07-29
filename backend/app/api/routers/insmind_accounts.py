@@ -505,6 +505,10 @@ async def batch_auto_register_insmind(
                         await db.commit()
                     except Exception as e:
                         logger.warning(f"批量注册存库失败: {e}")
+                        try:
+                            await db.rollback()
+                        except Exception:
+                            pass
                 elif result.get("success") and not result.get("org_id"):
                     logger.warning(f"⏭️ 账号 {result.get('email')} 无 org_id，跳过入库")
                 return result
@@ -705,9 +709,9 @@ async def insmind_generate(
                                     poll_data = poll_resp.json()
                                     if poll_data.get("status") == "completed":
                                         record = poll_data.get("record", {})
-                                        video_url = record.get("generation_result") or 
-                                            next((a.get("url") for a in (record.get("assets") or []) if ".mp4" in (a.get("url") or "")), None) or 
-                                            record.get("result_ext", {}).get("content_url")
+                                        video_url = record.get("generation_result") or next(
+                                            (a.get("url") for a in (record.get("assets") or []) if ".mp4" in (a.get("url") or "")), None
+                                        ) or record.get("result_ext", {}).get("content_url")
                                         if video_url:
                                             logger.info(f"✅ 轮询成功获取视频: {video_url[:60]}...")
                                             break
@@ -723,12 +727,6 @@ async def insmind_generate(
                             error="视频生成超时（4分钟），请稍后查看",
                             timeout=True,
                         )
-                                    else:
-                                        return InsMindGenerateResponse(
-                                            success=False, task_id=task_id,
-                                            error="视频生成超时（4分钟），请稍后查看",
-                                            timeout=True,
-                                        )
                 else:
                     await _release()
                     err_msg = img_result.message or "insMind 图生视频失败"
