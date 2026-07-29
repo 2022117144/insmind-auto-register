@@ -298,18 +298,27 @@ async def register() -> dict:
                     }])
 
                     # 在新页面访问 creation 激活 tenant（load + 等待 cookie 设置，不等 networkidle 避免卡死）
-                    create_page = await ctx.new_page()
-                    await create_page.goto("https://www.insmind.com/creation",
-                                           wait_until="load", timeout=30000)
-                    await create_page.wait_for_timeout(15000)
-                    await create_page.close()
+                    for creation_attempt in range(2):
+                        if creation_attempt > 0:
+                            logger.info(f"重试 creation 页面 (第 {creation_attempt+1} 次)...")
+                        create_page = await ctx.new_page()
+                        try:
+                            await create_page.goto("https://www.insmind.com/creation",
+                                                   wait_until="load", timeout=30000)
+                            await create_page.wait_for_timeout(15000)
+                        except Exception as e:
+                            logger.warning(f"creation 页面加载失败: {e}")
+                        finally:
+                            await create_page.close()
 
-                    # 收集所有 cookie 找 org_id
-                    cookies = await ctx.cookies()
-                    for c in cookies:
-                        if "org_id" in c["name"]:
-                            result["org_id"] = c["value"]
-                            logger.info(f"已激活租户, org_id={c['value'][:30]}...")
+                        # 收集所有 cookie 找 org_id
+                        cookies = await ctx.cookies()
+                        for c in cookies:
+                            if "org_id" in c["name"]:
+                                result["org_id"] = c["value"]
+                                logger.info(f"已激活租户, org_id={c['value'][:30]}...")
+                                break
+                        if result.get("org_id"):
                             break
 
                     if not result.get("org_id"):
