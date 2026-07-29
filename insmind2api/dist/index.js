@@ -259,7 +259,7 @@ async function refreshAccounts() {
     console.log(`[Accounts] Backend refresh failed: ${e.message}, keeping ${accounts.length} cached`);
   }
 }
-setInterval(() => refreshAccounts(), 3e4);
+setInterval(() => refreshAccounts(), 6e4);
 refreshAccounts().then(() => {
   console.log(`\u{1F4E7} Accounts pool: ${accounts.length}`);
   initTokenRefresh(() => accounts);
@@ -298,7 +298,7 @@ function getInnerToken(account) {
   return parsed ? parsed.accessToken : account.token;
 }
 function makeRequest2(options, body) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const req = import_https2.default.request(options, (res) => {
       let data = "";
       res.on("data", (chunk) => {
@@ -306,7 +306,16 @@ function makeRequest2(options, body) {
       });
       res.on("end", () => resolve({ status: res.statusCode || 500, data }));
     });
-    req.on("error", reject);
+    req.on("error", (err) => {
+      console.log(`[makeRequest] error: ${err.message}`);
+      resolve({ status: 502, data: `Request failed: ${err.message}` });
+    });
+    req.on("timeout", () => {
+      req.destroy();
+      console.log(`[makeRequest] timeout`);
+      resolve({ status: 504, data: "Request timeout" });
+    });
+    req.setTimeout(3e4);
     if (body)
       req.write(body);
     req.end();
@@ -920,7 +929,7 @@ router.get("/v1/tasks/:id", async (ctx) => {
   try {
     const result = await makeRequest2({
       hostname: "www.insmind.com",
-      path: "/api/dam/ai/records?page=1&size=10&type=video",
+      path: `/api/dam/ai/records?page=1&size=20&type=video&task_id=${ctx.params.id}`,
       method: "GET",
       headers: {
         "Authorization": `Bearer ${getInnerToken(account)}`,
@@ -933,7 +942,14 @@ router.get("/v1/tasks/:id", async (ctx) => {
     });
     if (result.status === 200) {
       try {
-        ctx.body = { id: ctx.params.id, status: "completed", records: JSON.parse(result.data) };
+        const records = JSON.parse(result.data);
+        const items = Array.isArray(records) ? records : records?.data ?? [];
+        const match = items.find((r) => r.id === ctx.params.id || r.task_id === ctx.params.id);
+        if (match && (match.generation_result || match?.assets?.find((a) => a?.url?.includes(".mp4"))?.url)) {
+          ctx.body = { id: ctx.params.id, status: "completed", record: match };
+        } else {
+          ctx.body = { id: ctx.params.id, status: "processing", message: "Still generating..." };
+        }
       } catch {
         ctx.body = { id: ctx.params.id, status: "processing", raw: result.data.substring(0, 200) };
       }
@@ -945,7 +961,7 @@ router.get("/v1/tasks/:id", async (ctx) => {
   }
 });
 app.use((0, import_cors.default)());
-app.use((0, import_koa_body.koaBody)());
+app.use((0, import_koa_body.koaBody)({ jsonLimit: "10mb" }));
 app.use(router.routes()).use(router.allowedMethods());
 var PORT = 5105;
 app.listen(PORT, () => {

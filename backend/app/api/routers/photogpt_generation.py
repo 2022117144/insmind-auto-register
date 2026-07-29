@@ -86,7 +86,7 @@ def _get_proxy() -> Optional[dict]:
         else:
             return _proxy_url
     _proxy_checked = True
-    for p in [7897, 7890]:
+    for p in [7897]:
         try:
             s = __import__("socket").create_connection(("127.0.0.1", p), timeout=0.5)
             s.close()
@@ -150,7 +150,7 @@ async def _upload_data_urls(data_urls: list[str], nc_token: str = "") -> list[st
                     f"{PHOTOGPT_API}/api/v1/get-sign-url",
                     json={"biz": "user_upload", "files": [{"filename": filename}]},
                     cookies=cookies,
-                    headers={"Content-Type": "application/json", "Origin": PHOTOGPT_API, "Referer": f"{PHOTOGPT_API}/ai-models/gpt-image-2"},
+                    headers=BROWSER_HEADERS,
                 )
                 if r.status_code != 200:
                     raise Exception(f"get-sign-url failed: {r.status_code}")
@@ -208,14 +208,56 @@ def _serialize(job) -> dict:
 
 async def _acquire_account(db: AsyncSession, _retry: int = 3) -> Optional[PhotoGPTAccount]:
     now = datetime.utcnow()
+    today_str = now.strftime("%Y-%m-%d")
 
-    # 先清理已耗尽额度的残留账号（防止上次生成后重启导致自动删除没跑）
-    await db.execute(
-        delete(PhotoGPTAccount).where(
-            PhotoGPTAccount.credits_used >= PhotoGPTAccount.credits
+    # 读取配置，决定用完额度后的处理方式
+    auto_delete = True  # 默认删除
+    try:
+        import json as _json
+        import os as _os
+        _cfg_file = _os.path.join(_os.path.dirname(__file__), "..", "..", "..", "data", "photogpt_config.json")
+        if _os.path.exists(_cfg_file):
+            with open(_cfg_file) as _f:
+                _cfg = _json.load(_f)
+                auto_delete = _cfg.get("auto_delete_on_exhaust", True)
+    except Exception:
+        pass
+
+    if auto_delete:
+        # 自动删除模式：删掉已用完额度的账号
+        await db.execute(
+            delete(PhotoGPTAccount).where(
+                PhotoGPTAccount.credits_used >= PhotoGPTAccount.credits
+            )
         )
-    )
-    await db.commit()
+        await db.commit()
+    else:
+        # 每天重置模式：把今天用完额度的账号标记为禁用（credits_reset_date = 今天）
+        # 同时重置昨天及之前用完额度的账号（credits_used 归零，清除 credits_reset_date）
+        exhausted = (await db.execute(
+            select(PhotoGPTAccount).where(
+                PhotoGPTAccount.credits_used >= PhotoGPTAccount.credits
+            )
+        )).scalars().all()
+        for acct in exhausted:
+            if acct.credits_reset_date and acct.credits_reset_date < today_str:
+                # 昨天的禁用记录 → 重置额度
+                await db.execute(
+                    update(PhotoGPTAccount)
+                    .where(PhotoGPTAccount.id == acct.id)
+                    .values(credits_used=0, credits_reset_date="", status="active", active=True)
+                )
+                logger.info(f"🔄 重置额度: {acct.email}")
+            elif not acct.credits_reset_date or acct.credits_reset_date == today_str:
+                # 今天用完的 → 标记为今天禁用（不删除）
+                await db.execute(
+                    update(PhotoGPTAccount)
+                    .where(PhotoGPTAccount.id == acct.id)
+                    .values(credits_reset_date=today_str, status="active", active=False)
+                )
+                if acct.credits_reset_date != today_str:
+                    logger.info(f"⏸️ 今日额度已用完: {acct.email}，明天重置")
+        await db.commit()
 
     # 原子方式：SELECT 一个空闲账号 → 尝试 UPDATE 抢锁（WHERE 带锁条件）
     # 避免 TOCTOU 竞态：两个请求同时读到同一个账号时，只有一个 UPDATE 会生效

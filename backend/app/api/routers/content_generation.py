@@ -91,12 +91,14 @@ async def _resolve_default_generation_region(db: AsyncSession) -> str:
 
 # 并发安全：从 DB 原子获取一个空闲的 insMind 账号，标记为 generating
 async def _cleanup_dead_accounts(db: AsyncSession):
-    """清理过期且无 refresh_token 的账号（生成前自动打扫）
+    """清理过期账号（生成前自动打扫）
     
     先快速判断是否有过期账号，有才执行全量清理，避免每次生成都查全表。
     """
     from app.models.insmind_account import InsMindAccount, check_insmind_token_valid
     from sqlalchemy import update as sql_update, func as sql_func
+
+    logger.info("🧹 _cleanup_dead_accounts 被调用")
 
     # 快速预检：是否有 token 已过期的账号
     count_result = await db.execute(
@@ -104,6 +106,7 @@ async def _cleanup_dead_accounts(db: AsyncSession):
     )
     total = count_result.scalar() or 0
     if total == 0:
+        logger.info("🧹 空池，跳过清理")
         return  # 空池，无需清理
 
     # 预检：取一个 token 看看是否过期（大部分账号过期时间相近，取一个够用）
@@ -113,7 +116,9 @@ async def _cleanup_dead_accounts(db: AsyncSession):
         .where(InsMindAccount.token != "")
         .limit(1)
     )).scalar()
+    logger.info(f"🧹 预检: first_token={first_token[:30] if first_token else 'None'}...")
     if first_token and check_insmind_token_valid(first_token):
+        logger.info(f"🧹 预检通过: 第一个 token 仍有效，跳过全量清理")
         # 最近注册的账号还没过期，跳过全量清理
         # 但仍需释放卡死账号
         stuck = (await db.execute(
@@ -140,12 +145,11 @@ async def _cleanup_dead_accounts(db: AsyncSession):
     )
     cleaned = 0
     for acct in all_accts:
-        has_rt = bool(acct.refresh_token and acct.refresh_token.strip())
-        if not check_insmind_token_valid(acct.token) and not has_rt:
-            # token 过期 + 无 refresh_token → 废物，删除
+        if not check_insmind_token_valid(acct.token):
+            # token 过期 → 直接删除（不管有没有 refresh_token，email 注册的 refresh_token 无法刷新）
             await db.delete(acct)
             cleaned += 1
-            logger.info(f"🧹 清理过期账号: {acct.email} (无 refresh_token)")
+            logger.info(f"🧹 清理过期账号: {acct.email}")
         elif acct.status == "generating":
             # 卡在 generating 的账号（上次生成崩溃了），释放
             await db.execute(

@@ -98,6 +98,10 @@ async def lifespan(app: FastAPI):
     # 轻量迁移：确保 insmind_accounts org_id 列存在
     await ensure_insmind_accounts_org_id_column()
 
+    # 轻量迁移：确保 photogpt_accounts credits_reset_date 列存在
+    from app.services.db_migration import ensure_photogpt_accounts_credits_reset_date_column
+    await ensure_photogpt_accounts_credits_reset_date_column()
+
     # 初始化 WebSocket 日志转发
     from app.api.routers.websocket import WebSocketLogHandler
 

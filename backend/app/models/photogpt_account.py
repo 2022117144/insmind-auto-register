@@ -24,3 +24,4 @@ class PhotoGPTAccount(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     last_used_at = Column(DateTime, nullable=True, comment="上次使用时间")
     gen_locked_until = Column(DateTime, nullable=True, comment="生成锁定至（10分钟超时）")
+    credits_reset_date = Column(String(10), default="", comment="额度重置日期 YYYY-MM-DD，为空则不限")

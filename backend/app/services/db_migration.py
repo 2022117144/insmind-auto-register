@@ -142,6 +142,25 @@ async def ensure_insmind_accounts_org_id_column():
                 logger.error(f"Failed to add insmind_accounts.org_id: {exc}")
 
 
+async def ensure_photogpt_accounts_credits_reset_date_column():
+    """Ensure photogpt_accounts has credits_reset_date column for daily reset support."""
+    async with async_session_factory() as session:
+        result = await session.execute(text("PRAGMA table_info(photogpt_accounts)"))
+        existing_cols = {row[1] for row in result.fetchall()}
+
+        if "credits_reset_date" not in existing_cols:
+            try:
+                await session.execute(
+                    text(
+                        "ALTER TABLE photogpt_accounts ADD COLUMN credits_reset_date VARCHAR(10) DEFAULT ''"
+                    )
+                )
+                await session.commit()
+                logger.info("Added column photogpt_accounts.credits_reset_date")
+            except Exception as exc:
+                logger.error(f"Failed to add photogpt_accounts.credits_reset_date: {exc}")
+
+
 async def ensure_content_generation_jobs_table():
     """Ensure content_generation_jobs table exists and has async task columns."""
     async with async_session_factory() as session:

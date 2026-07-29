@@ -157,7 +157,20 @@ async def list_insmind_accounts(
     page_size: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ):
-    """获取 insMind 账号列表"""
+    """获取 insMind 账号列表（自动清理过期账号）"""
+    # 直接删除 token 过期的账号
+    from app.models.insmind_account import InsMindAccount, check_insmind_token_valid
+    all_accts = (await db.execute(
+        select(InsMindAccount)
+    )).scalars().all()
+    cleaned = 0
+    for acct in all_accts:
+        if not check_insmind_token_valid(acct.token):
+            await db.delete(acct)
+            cleaned += 1
+    if cleaned:
+        await db.commit()
+        logger.info(f"🧹 清理了 {cleaned} 个过期 insMind 账号")
     query = select(InsMindAccount)
     if status:
         query = query.where(InsMindAccount.status == status)

@@ -91,8 +91,8 @@ async function refreshAccounts(): Promise<void> {
     }
 }
 
-// Start periodic refresh
-setInterval(() => refreshAccounts(), 30000);
+// Start periodic refresh (60s interval to reduce load on backend)
+setInterval(() => refreshAccounts(), 60000);
 
 // Initial load
 refreshAccounts().then(() => {
@@ -142,13 +142,22 @@ function getInnerToken(account: InsMindAccount): string {
 }
 
 function makeRequest(options: http.RequestOptions, body?: string): Promise<{ status: number; data: string }> {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
         const req = https.request(options, (res) => {
             let data = '';
             res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
             res.on('end', () => resolve({ status: res.statusCode || 500, data }));
         });
-        req.on('error', reject);
+        req.on('error', (err) => {
+            console.log(`[makeRequest] error: ${err.message}`);
+            resolve({ status: 502, data: `Request failed: ${err.message}` });
+        });
+        req.on('timeout', () => {
+            req.destroy();
+            console.log(`[makeRequest] timeout`);
+            resolve({ status: 504, data: 'Request timeout' });
+        });
+        req.setTimeout(30000);
         if (body) req.write(body);
         req.end();
     });
@@ -861,7 +870,7 @@ router.get('/v1/tasks/:id', async (ctx) => {
     try {
         const result = await makeRequest({
             hostname: 'www.insmind.com',
-            path: '/api/dam/ai/records?page=1&size=10&type=video',
+            path: `/api/dam/ai/records?page=1&size=20&type=video&task_id=${ctx.params.id}`,
             method: 'GET',
             headers: {
                 'Authorization': `Bearer ${getInnerToken(account)}`,
@@ -873,8 +882,18 @@ router.get('/v1/tasks/:id', async (ctx) => {
             },
         });
         if (result.status === 200) {
-            try { ctx.body = { id: ctx.params.id, status: 'completed', records: JSON.parse(result.data) }; }
-            catch { ctx.body = { id: ctx.params.id, status: 'processing', raw: result.data.substring(0, 200) }; }
+            try {
+                const records = JSON.parse(result.data);
+                const items = Array.isArray(records) ? records : (records?.data ?? []);
+                const match = items.find((r: any) => r.id === ctx.params.id || r.task_id === ctx.params.id);
+                if (match && (match.generation_result || match?.assets?.find((a: any) => a?.url?.includes('.mp4'))?.url)) {
+                    ctx.body = { id: ctx.params.id, status: 'completed', record: match };
+                } else {
+                    ctx.body = { id: ctx.params.id, status: 'processing', message: 'Still generating...' };
+                }
+            } catch {
+                ctx.body = { id: ctx.params.id, status: 'processing', raw: result.data.substring(0, 200) };
+            }
         } else {
             ctx.body = { id: ctx.params.id, status: 'processing', message: 'Still generating...' };
         }
@@ -884,7 +903,7 @@ router.get('/v1/tasks/:id', async (ctx) => {
 });
 
 app.use(cors());
-app.use(koaBody());
+app.use(koaBody({ jsonLimit: '10mb' }));
 app.use(router.routes()).use(router.allowedMethods());
 
 const PORT = 5105;
