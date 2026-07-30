@@ -109,11 +109,16 @@ def decode_token(raw: str) -> Tuple[Optional[str], Optional[str], Optional[str]]
         return None, None, None
 
 
-async def register() -> dict:
+async def register(predefined_email: Optional[str] = None) -> dict:
     """Playwright 全后台注册"""
     from patchright.async_api import async_playwright
 
-    email, mail_token = await create_mail()
+    if predefined_email:
+        email = predefined_email
+        mail_token = predefined_email
+        logger.info(f"使用预生成邮箱: {email}")
+    else:
+        email, mail_token = await create_mail()
     result = {"success": False, "email": email, "token": None, "access_token": None, "userId": None, "error": None}
     logger.info(f"邮箱: {email}")
 
@@ -410,9 +415,10 @@ async def add_to_pool(email: str, token: str, userId: str, refresh_token: str = 
 async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--auto-add", action="store_true")
+    parser.add_argument("--email", type=str, default=None, help="预生成的邮箱，跳过 create_mail")
     args = parser.parse_args()
     logger.info("=== insMind 自动注册 ===")
-    result = await register()
+    result = await register(predefined_email=args.email)
     sys.stdout.write("\n--- RESULT ---\n")
     sys.stdout.write(json.dumps({k: v for k, v in result.items()}, separators=(",", ":"), ensure_ascii=False) + "\n")
     sys.stdout.flush()

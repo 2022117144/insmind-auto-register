@@ -465,15 +465,45 @@ async def batch_auto_register_insmind(
     python_cmd = "E:/视频生成/dreamina-auto-register-main/backend/.venv_win/Scripts/python.exe"
     MAX_CONCURRENT = 3  # Playwright 很重，限制并发
 
+    # 第一步：串行获取邮箱（避免 tempmail.ing 限流）
+    import httpx as _httpx
+    import os as _os
+    _saved_env = {k: _os.environ.pop(k, None) for k in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"]}
+    emails = []
+    try:
+        for i in range(count):
+            try:
+                async with _httpx.AsyncClient(timeout=15.0) as mail_c:
+                    mr = await mail_c.post("https://api.tempmail.ing/api/generate", json={"duration": 10})
+                    if mr.status_code == 200:
+                        md = mr.json()
+                        if md.get("success"):
+                            addr = md["email"]["address"]
+                            emails.append(addr)
+                            logger.info(f"已获取邮箱 [{i+1}/{count}]: {addr}")
+                            continue
+                    logger.warning(f"获取邮箱 [{i+1}/{count}] 失败: {mr.status_code}")
+                    emails.append(None)
+            except Exception as e:
+                logger.warning(f"获取邮箱 [{i+1}/{count}] 异常: {e}")
+                emails.append(None)
+    finally:
+        for k, v in _saved_env.items():
+            if v is not None:
+                _os.environ[k] = v
+
+    valid_emails = [e for e in emails if e]
+    logger.info(f"成功获取 {len(valid_emails)}/{count} 个邮箱")
+
     semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 
-    async def _run_one() -> dict:
+    async def _run_one(email: str) -> dict:
         async with semaphore:
             loop = asyncio.get_event_loop()
             proc = await loop.run_in_executor(
                 None,
                 lambda: subprocess.Popen(
-                    [python_cmd, script_path, "--auto-add"],
+                    [python_cmd, script_path, "--auto-add", "--email", email],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     cwd=os.path.dirname(script_path),
@@ -519,7 +549,7 @@ async def batch_auto_register_insmind(
                 return {"success": False, "error": str(e)}
 
     logger.info(f"🚀 开始批量注册 {count} 个 insMind 账号 (并发 {MAX_CONCURRENT})...")
-    tasks = [_run_one() for _ in range(count)]
+    tasks = [_run_one(email) for email in valid_emails]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     parsed = []
