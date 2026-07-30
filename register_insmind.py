@@ -20,24 +20,38 @@ PROXY = "http://127.0.0.1:7897"
 
 
 async def create_mail() -> Tuple[str, str]:
-    """获取临时邮箱（tempmail.ing API，不走代理，无需鉴权）"""
+    """获取临时邮箱（tempmail.ing API，不走代理，无需鉴权，限流时重试）"""
     import httpx as _httpx
     import os as _os
     _saved = {k: _os.environ.pop(k, None) for k in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"]}
     try:
-        async with _httpx.AsyncClient(timeout=15.0) as c:
-            r = await c.post(f"{TEMPMAIL_API}/api/generate", json={"duration": 10})
-            if r.status_code == 200:
-                data = r.json()
-                if data.get("success"):
-                    addr = data["email"]["address"]
-                    logger.info(f"邮箱: {addr}")
-                    return addr, addr
-            logger.warning(f"tempmail.ing 创建失败: {r.status_code} {r.text[:200]}")
-            raise Exception("无法获取邮箱")
-    except Exception as e:
-        logger.warning(f"tempmail.ing API 失败: {e}")
-        raise Exception("无法获取邮箱")
+        last_error = ""
+        for attempt in range(3):
+            try:
+                async with _httpx.AsyncClient(timeout=15.0) as c:
+                    r = await c.post(f"{TEMPMAIL_API}/api/generate", json={"duration": 10})
+                    if r.status_code == 200:
+                        data = r.json()
+                        if data.get("success"):
+                            addr = data["email"]["address"]
+                            logger.info(f"邮箱: {addr}")
+                            return addr, addr
+                    body = r.text[:200]
+                    logger.warning(f"tempmail.ing 创建失败 (第{attempt+1}次): {r.status_code} {body}")
+                    if "too many requests" in body.lower() or "slow down" in body.lower():
+                        wait = 5 * (attempt + 1)
+                        logger.info(f"限流，等待 {wait}s 重试...")
+                        await asyncio.sleep(wait)
+                        continue
+                    last_error = f"tempmail.ing 返回 {r.status_code}: {body}"
+                    break
+            except Exception as e:
+                logger.warning(f"tempmail.ing API 失败 (第{attempt+1}次): {e}")
+                await asyncio.sleep(3)
+                last_error = str(e)
+        else:
+            last_error = "重试 3 次后仍失败"
+        raise Exception(last_error or "无法获取邮箱")
     finally:
         for k, v in _saved.items():
             if v is not None:
@@ -298,27 +312,18 @@ async def register() -> dict:
                     }])
 
                     # 在新页面访问 creation 激活 tenant（load + 等待 cookie 设置，不等 networkidle 避免卡死）
-                    for creation_attempt in range(2):
-                        if creation_attempt > 0:
-                            logger.info(f"重试 creation 页面 (第 {creation_attempt+1} 次)...")
-                        create_page = await ctx.new_page()
-                        try:
-                            await create_page.goto("https://www.insmind.com/creation",
-                                                   wait_until="load", timeout=30000)
-                            await create_page.wait_for_timeout(15000)
-                        except Exception as e:
-                            logger.warning(f"creation 页面加载失败: {e}")
-                        finally:
-                            await create_page.close()
+                    create_page = await ctx.new_page()
+                    await create_page.goto("https://www.insmind.com/creation",
+                                           wait_until="load", timeout=30000)
+                    await create_page.wait_for_timeout(15000)
+                    await create_page.close()
 
-                        # 收集所有 cookie 找 org_id
-                        cookies = await ctx.cookies()
-                        for c in cookies:
-                            if "org_id" in c["name"]:
-                                result["org_id"] = c["value"]
-                                logger.info(f"已激活租户, org_id={c['value'][:30]}...")
-                                break
-                        if result.get("org_id"):
+                    # 收集所有 cookie 找 org_id
+                    cookies = await ctx.cookies()
+                    for c in cookies:
+                        if "org_id" in c["name"]:
+                            result["org_id"] = c["value"]
+                            logger.info(f"已激活租户, org_id={c['value'][:30]}...")
                             break
 
                     if not result.get("org_id"):
