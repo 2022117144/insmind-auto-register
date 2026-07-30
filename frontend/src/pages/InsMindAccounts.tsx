@@ -108,10 +108,12 @@ export default function InsMindAccounts() {
         }
     }
 
+    const [batchCount, setBatchCount] = useState(3)
+
     const handleBatchRegister = async () => {
         setBatchRegistering(true)
         try {
-            const result = await insmindAccountsApi.autoRegisterBatch(3)
+            const result = await insmindAccountsApi.autoRegisterBatch(batchCount)
             toast.success(`批量注册完成: ${result.success}/${result.total} 成功`)
             fetchAccounts()
         } catch (error: any) {
@@ -222,19 +224,29 @@ export default function InsMindAccounts() {
                         )}
                         {registering ? '注册中...' : '添加账号'}
                     </Button>
-                    <Button
-                        size="sm"
-                        onClick={handleBatchRegister}
-                        disabled={batchRegistering}
-                        className="h-9 bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-400 hover:to-purple-500 text-white rounded-[10px] shadow-lg shadow-purple-500/20"
-                    >
-                        {batchRegistering ? (
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        ) : (
-                            <Sparkles className="mr-2 h-4 w-4" />
-                        )}
-                        {batchRegistering ? '批量注册中(3)...' : '批量注册 3 个'}
-                    </Button>
+                    <div className="flex items-center gap-2">
+                        <Input
+                            type="number"
+                            min={1}
+                            max={20}
+                            value={batchCount}
+                            onChange={e => setBatchCount(Math.max(1, Math.min(20, parseInt(e.target.value) || 1)))}
+                            className="w-16 h-9 bg-card/40 border-white/5 rounded-[10px] text-center"
+                        />
+                        <Button
+                            size="sm"
+                            onClick={handleBatchRegister}
+                            disabled={batchRegistering}
+                            className="h-9 bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-400 hover:to-purple-500 text-white rounded-[10px] shadow-lg shadow-purple-500/20"
+                        >
+                            {batchRegistering ? (
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            ) : (
+                                <Sparkles className="mr-2 h-4 w-4" />
+                            )}
+                            {batchRegistering ? `批量注册中(${batchCount})...` : '批量注册'}
+                        </Button>
+                    </div>
                     <Button
                         size="sm"
                         variant="outline"
