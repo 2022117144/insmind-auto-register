@@ -465,32 +465,22 @@ async def batch_auto_register_insmind(
     python_cmd = "E:/视频生成/dreamina-auto-register-main/backend/.venv_win/Scripts/python.exe"
     MAX_CONCURRENT = 3  # Playwright 很重，限制并发
 
-    # 第一步：串行获取邮箱（避免 tempmail.ing 限流）
-    import httpx as _httpx
+    # 第一步：串行获取邮箱（调 register_insmind 的 create_mail，自带重试）
     import os as _os
-    _saved_env = {k: _os.environ.pop(k, None) for k in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"]}
+    import sys as _sys
+    _script_dir = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))))
+    if _script_dir not in _sys.path:
+        _sys.path.insert(0, _script_dir)
+    from register_insmind import create_mail as _create_mail
     emails = []
-    try:
-        for i in range(count):
-            try:
-                async with _httpx.AsyncClient(timeout=15.0) as mail_c:
-                    mr = await mail_c.post("https://api.tempmail.ing/api/generate", json={"duration": 10})
-                    if mr.status_code == 200:
-                        md = mr.json()
-                        if md.get("success"):
-                            addr = md["email"]["address"]
-                            emails.append(addr)
-                            logger.info(f"已获取邮箱 [{i+1}/{count}]: {addr}")
-                            continue
-                    logger.warning(f"获取邮箱 [{i+1}/{count}] 失败: {mr.status_code}")
-                    emails.append(None)
-            except Exception as e:
-                logger.warning(f"获取邮箱 [{i+1}/{count}] 异常: {e}")
-                emails.append(None)
-    finally:
-        for k, v in _saved_env.items():
-            if v is not None:
-                _os.environ[k] = v
+    for i in range(count):
+        try:
+            addr, _ = await _create_mail()
+            emails.append(addr)
+            logger.info(f"已获取邮箱 [{i+1}/{count}]: {addr}")
+        except Exception as e:
+            logger.warning(f"获取邮箱 [{i+1}/{count}] 失败: {e}")
+            emails.append(None)
 
     valid_emails = [e for e in emails if e]
     logger.info(f"成功获取 {len(valid_emails)}/{count} 个邮箱")
@@ -560,7 +550,12 @@ async def batch_auto_register_insmind(
             parsed.append({"success": False, "error": str(r)})
 
     success_count = sum(1 for r in parsed if r.get("success"))
+    failed_count = count - success_count
     logger.info(f"批量注册完成: {success_count}/{count} 成功")
+    if failed_count > 0:
+        for r in parsed:
+            if not r.get("success"):
+                logger.warning(f"  注册失败: {r.get('email', '?')} 原因={r.get('error', '未知')}")
 
     return BatchRegisterResponse(
         total=count,
