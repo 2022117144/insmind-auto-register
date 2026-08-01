@@ -38,7 +38,7 @@ async def create_mail() -> Tuple[str, str]:
                             return addr, addr
                     body = r.text[:200]
                     logger.warning(f"tempmail.ing 创建失败 (第{attempt+1}次): {r.status_code} {body}")
-                    if "too many requests" in body.lower() or "slow down" in body.lower():
+                    if r.status_code == 429 or "too many requests" in body.lower() or "slow down" in body.lower():
                         wait = 5 * (attempt + 1)
                         logger.info(f"限流，等待 {wait}s 重试...")
                         await asyncio.sleep(wait)
