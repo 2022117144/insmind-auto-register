@@ -541,12 +541,22 @@ router.post('/v1/videos/generations', async (ctx) => {
 
     try {
         let videoUrl: string | null = null;
-        const m1 = rawData.match(/https:\/\/[^\"\\, ]+\.mp4/);
-        const m2 = rawData.match(/https?:\\\/\\\/[^\"\\, ]+\.mp4/);
-        if (m1) videoUrl = m1[0];
-        else if (m2) videoUrl = m2[0].replace(/\\\//g, '/');
+            const m1 = rawData.match(/https:\/\/[^\"\\, ]+\.mp4/);
+            const m2 = rawData.match(/https?:\\\/\\\/[^\"\\, ]+\.mp4/);
+            if (m1) videoUrl = m1[0];
+            else if (m2) videoUrl = m2[0].replace(/\\\//g, '/');
 
-        // If no video URL in SSE response, try polling records API
+            // 检查 SSE 响应中的错误信息
+            let sseError: string | null = null;
+            const errMatch = rawData.match(/"code"\s*:\s*"-?\d+"\s*,\s*"error"\s*:\s*"([^"]+)"/);
+            const msgMatch = rawData.match(/"type"\s*:\s*"plain"\s*,\s*"text"\s*:\s*"([^"]+)"/);
+            if (errMatch) sseError = `code=${errMatch[0].match(/"code":"(-?\d+)"/)?.[1]}: ${errMatch[1]}`;
+            else if (msgMatch) sseError = msgMatch[1];
+            if (sseError) {
+                console.log(`❌ SSE error detected: ${sseError}`);
+            }
+
+            // If no video URL in SSE response, try polling records API
         const tidMatch = rawData.match(/"thread_id"\s*:\s*"([^"]+)"/);
         const pollTaskId = tidMatch ? tidMatch[1] : taskId;
         if (!videoUrl && (rawData.includes('function_call') || rawData.includes('Pixverse') || rawData.includes('video-generation'))) {
@@ -830,9 +840,7 @@ router.post('/v1/videos/generations-image', async (ctx) => {
                                                     || latest?.assets?.find((a: any) => a?.url?.includes('.mp4'))?.url
                                                     || latest?.result_ext?.content_url;
                                                 if (videoUrlFromRecord) {
-                                                    videoUrl = videoUrlFromRecord;
-                                                    console.log(`✅ Video found: ${videoUrl.substring(0, 60)}...`);
-                                                    break;
+                                                    videoUrl = videoUrlFromRecord;                                                    console.log(`✅ Video found: ${videoUrl!.substring(0, 60)}...`);                                                    break;
                                                 }
                                             }
                                         }

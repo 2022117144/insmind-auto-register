@@ -126,16 +126,33 @@ async def _cleanup_dead_accounts(db: AsyncSession):
             .where(InsMindAccount.status == "generating")
         )).scalars().all()
         if stuck:
-            for acct in stuck:
-                await db.execute(
-                    sql_update(InsMindAccount)
-                    .where(InsMindAccount.id == acct.id)
-                    .where(InsMindAccount.status == "generating")
-                    .values(status="active")
+                    for acct in stuck:
+                        await db.execute(
+                            sql_update(InsMindAccount)
+                            .where(InsMindAccount.id == acct.id)
+                            .where(InsMindAccount.status == "generating")
+                            .values(status="active")
+                        )
+                        logger.info(f"🔓 释放卡死账号: {acct.email}")
+                    await db.commit()
+
+                # 清理超时的 processing 任务（超过 5 分钟还没完成的，标记为 failed）
+                from datetime import datetime, timedelta
+                from app.models.content_generation_job import ContentGenerationJob
+                timeout_jobs = (
+                    (await db.execute(
+                        select(ContentGenerationJob)
+                        .where(ContentGenerationJob.status.in_(["processing", "submitted"]))
+                        .where(ContentGenerationJob.created_at < datetime.utcnow() - timedelta(minutes=5))
+                    )).scalars().all()
                 )
-                logger.info(f"🔓 释放卡死账号: {acct.email}")
-            await db.commit()
-        return
+                if timeout_jobs:
+                    for j in timeout_jobs:
+                        j.status = "failed"
+                        j.error_message = "超时自动清理（超过5分钟未完成）"
+                        logger.info(f"🧹 清理超时任务 job_id={j.id}, account_id={j.account_id}")
+                    await db.commit()
+                return
 
     # 有过期账号，执行全量清理
     all_accts = (
@@ -404,18 +421,26 @@ async def create_generation_job(
                         "aspect_ratio": payload.ratio or "16:9",
                     })
                     _r = _sp.run(["curl", "-s", "-X", "POST", "http://127.0.0.1:5105/api/v1/videos/generations",
-                        "-H", "Content-Type: application/json", "-d", _gen_payload],
-                        capture_output=True, text=True, timeout=310)
-                    logger.info(f"curl 提交结果: rc={_r.returncode}, stdout={_r.stdout[:200]}, stderr={_r.stderr[:200]}")
+                    "-H", "Content-Type: application/json", "-d", _gen_payload],
+                    capture_output=True, text=True, timeout=310)
+                    logger.info(f"curl 提交结果: rc={_r.returncode}, stdout={_r.stdout[:500]}, stderr={_r.stderr[:200]}")
                     if _r.returncode != 0:
                         result = _j.dumps({"code": "failed", "message": f"curl 失败: {_r.stderr}"})
                     else:
                         result = _r.stdout
                     _data = _j.loads(result) if isinstance(result, str) else result
                     _task_id = _data.get("task_id", "")
-                    _video_url = None
-                    _status = "processing"
-                    if _task_id:
+                    _video_url = _data.get("video_url")
+                    _err_msg = _data.get("error") or _data.get("message", "")
+                    # 检查初始响应中的错误（如额度不足、审核拦截等）
+                    if _err_msg:
+                        logger.error(f"视频生成提交失败: {_err_msg}")
+                        _status = "failed"
+                    elif _video_url:
+                        _status = "success"
+                    else:
+                        _status = "processing"
+                    if _status == "processing" and _task_id:
                         # 轮询结果
                         for _ in range(12):
                             await asyncio.sleep(15)

@@ -494,6 +494,17 @@ router.post('/v1/videos/generations', async (ctx) => {
             videoUrl = m1[0];
         else if (m2)
             videoUrl = m2[0].replace(/\\\//g, '/');
+        // 检查 SSE 响应中的错误信息
+        let sseError = null;
+        const errMatch = rawData.match(/"code"\s*:\s*"-?\d+"\s*,\s*"error"\s*:\s*"([^"]+)"/);
+        const msgMatch = rawData.match(/"type"\s*:\s*"plain"\s*,\s*"text"\s*:\s*"([^"]+)"/);
+        if (errMatch)
+            sseError = `code=${errMatch[0].match(/"code":"(-?\d+)"/)?.[1]}: ${errMatch[1]}`;
+        else if (msgMatch)
+            sseError = msgMatch[1];
+        if (sseError) {
+            console.log(`❌ SSE error detected: ${sseError}`);
+        }
         // If no video URL in SSE response, try polling records API
         const tidMatch = rawData.match(/"thread_id"\s*:\s*"([^"]+)"/);
         const pollTaskId = tidMatch ? tidMatch[1] : taskId;
