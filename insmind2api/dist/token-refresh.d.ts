@@ -15,7 +15,6 @@ interface InsMindAccount {
     email: string;
     token: string;
     userId: string;
-    credits: number;
     refreshToken?: string;
     refreshTokenSig?: string;
     tokenExpiresAt?: number;

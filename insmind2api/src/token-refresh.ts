@@ -21,7 +21,6 @@ interface InsMindAccount {
     email: string;
     token: string;       // inner JWT (access_token)
     userId: string;
-    credits: number;
     refreshToken?: string;    // from token.prod.refresh_token cookie
     refreshTokenSig?: string; // from token.prod.refresh_token.sig cookie
     tokenExpiresAt?: number;  // unix timestamp when token expires
@@ -220,7 +219,6 @@ async function checkAndRefreshAll(): Promise<void> {
             await refreshAccountToken(account);
         } else if (timeLeft <= 0) {
             console.log(`[TokenRefresh] 🔴 ${account.email}: token expired, no refresh_token available`);
-            account.credits = -1; // Mark as expired
         }
     }
 }

@@ -423,11 +423,11 @@ async def create_generation_job(
                         _task_id = _data.get("id") or _data.get("task_id", "")
                         _video_url = _data.get("video_url")
                         _err_msg = _data.get("error") or _data.get("message", "")
-                        if _err_msg:
+                        if _video_url:
+                            _status = "success"
+                        elif _err_msg:
                             logger.error(f"视频生成提交失败: {_err_msg}")
                             _status = "failed"
-                        elif _video_url:
-                            _status = "success"
                         else:
                             _status = "processing"
                         if _status == "processing":
@@ -489,7 +489,7 @@ async def create_generation_job(
                         await _release_insmind_account(bg_db, acct)
 
                     else:
-                        err_msg = str(_data.get("message", "")) if isinstance(_data, dict) else str(_data)
+                        err_msg = str(_data.get("error") or _data.get("message", "")) if isinstance(_data, dict) else str(_data)
                         await bg_db.execute(
                             update(ContentGenerationJob).where(
                                 ContentGenerationJob.id == job_id
