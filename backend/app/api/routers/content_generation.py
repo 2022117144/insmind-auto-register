@@ -126,33 +126,33 @@ async def _cleanup_dead_accounts(db: AsyncSession):
             .where(InsMindAccount.status == "generating")
         )).scalars().all()
         if stuck:
-                    for acct in stuck:
-                        await db.execute(
-                            sql_update(InsMindAccount)
-                            .where(InsMindAccount.id == acct.id)
-                            .where(InsMindAccount.status == "generating")
-                            .values(status="active")
-                        )
-                        logger.info(f"🔓 释放卡死账号: {acct.email}")
-                    await db.commit()
-
-                # 清理超时的 processing 任务（超过 5 分钟还没完成的，标记为 failed）
-                from datetime import datetime, timedelta
-                from app.models.content_generation_job import ContentGenerationJob
-                timeout_jobs = (
-                    (await db.execute(
-                        select(ContentGenerationJob)
-                        .where(ContentGenerationJob.status.in_(["processing", "submitted"]))
-                        .where(ContentGenerationJob.created_at < datetime.utcnow() - timedelta(minutes=5))
-                    )).scalars().all()
+            for acct in stuck:
+                await db.execute(
+                    sql_update(InsMindAccount)
+                    .where(InsMindAccount.id == acct.id)
+                    .where(InsMindAccount.status == "generating")
+                    .values(status="active")
                 )
-                if timeout_jobs:
-                    for j in timeout_jobs:
-                        j.status = "failed"
-                        j.error_message = "超时自动清理（超过5分钟未完成）"
-                        logger.info(f"🧹 清理超时任务 job_id={j.id}, account_id={j.account_id}")
-                    await db.commit()
-                return
+                logger.info(f"🔓 释放卡死账号: {acct.email}")
+            await db.commit()
+
+        # 清理超时的 processing 任务（超过 5 分钟还没完成的，标记为 failed）
+        from datetime import datetime, timedelta
+        from app.models.content_generation_job import ContentGenerationJob
+        timeout_jobs = (
+            (await db.execute(
+                select(ContentGenerationJob)
+                .where(ContentGenerationJob.status.in_(["processing", "submitted"]))
+                .where(ContentGenerationJob.created_at < datetime.utcnow() - timedelta(minutes=5))
+            )).scalars().all()
+        )
+        if timeout_jobs:
+            for j in timeout_jobs:
+                j.status = "failed"
+                j.error_message = "超时自动清理（超过5分钟未完成）"
+                logger.info(f"🧹 清理超时任务 job_id={j.id}, account_id={j.account_id}")
+            await db.commit()
+        return
 
     # 有过期账号，执行全量清理
     all_accts = (
@@ -396,73 +396,69 @@ async def create_generation_job(
         await db.refresh(job)
         job_id = job.id
 
-        # 3. 后台异步执行：直接调 5105 API（绕过 httpx 代理问题）
+        # 3. 后台异步执行：直接调 5105 API（用 httpx 替代 subprocess+curl）
         async def _background_gen():
             logger.info("🔥 _background_gen 被调用了!")
             nonlocal acct
             async with async_session_factory() as bg_db:
                 try:
-                    import subprocess as _sp, json as _j, os as _os
-                    # 先同步账号到 5105
-                    _sync_payload = _j.dumps({
-                        "email": acct.email, "token": acct.token or "",
-                        "userId": acct.user_id or "0", "credits": acct.credits or 0,
-                        "orgId": acct.org_id or "",
-                    })
-                    _sp.run(["curl", "-s", "-X", "POST", "http://127.0.0.1:5105/api/accounts",
-                        "-H", "Content-Type: application/json", "-d", _sync_payload],
-                        capture_output=True, timeout=10)
-                    # 提交视频生成
-                    _gen_payload = _j.dumps({
-                        "prompt": payload.prompt,
-                        "model": payload.model or "Pixverse-V6.0",
-                        "duration": payload.duration or 10,
-                        "resolution": payload.resolution or "360P",
-                        "aspect_ratio": payload.ratio or "16:9",
-                    })
-                    _r = _sp.run(["curl", "-s", "-X", "POST", "http://127.0.0.1:5105/api/v1/videos/generations",
-                    "-H", "Content-Type: application/json", "-d", _gen_payload],
-                    capture_output=True, text=True, timeout=310)
-                    logger.info(f"curl 提交结果: rc={_r.returncode}, stdout={_r.stdout[:500]}, stderr={_r.stderr[:200]}")
-                    if _r.returncode != 0:
-                        result = _j.dumps({"code": "failed", "message": f"curl 失败: {_r.stderr}"})
-                    else:
-                        result = _r.stdout
-                    _data = _j.loads(result) if isinstance(result, str) else result
-                    _task_id = _data.get("task_id", "")
-                    _video_url = _data.get("video_url")
-                    _err_msg = _data.get("error") or _data.get("message", "")
-                    # 检查初始响应中的错误（如额度不足、审核拦截等）
-                    if _err_msg:
-                        logger.error(f"视频生成提交失败: {_err_msg}")
-                        _status = "failed"
-                    elif _video_url:
-                        _status = "success"
-                    else:
-                        _status = "processing"
-                    if _status == "processing" and _task_id:
-                        # 轮询结果
-                        for _ in range(12):
-                            await asyncio.sleep(15)
-                            _pr = _sp.run(["curl", "-s", f"http://127.0.0.1:5105/api/v1/tasks/{_task_id}"],
-                                capture_output=True, text=True, timeout=10)
-                            if _pr.returncode == 0:
-                                _pd = _j.loads(_pr.stdout)
-                                _pr2 = _pd.get("result", _pd)
-                                _pu = _pr2.get("video_url")
-                                if _pu:
-                                    _video_url = _pu
-                                    _status = "success"
-                                    break
-                                _ps = _pr2.get("status", "")
-                                if _ps == "failed" or _pr2.get("error"):
-                                    _status = "failed"
-                                    break
+                    import json as _j
+                    async with httpx.AsyncClient(timeout=300.0, proxy=None) as _hc:
+                        # 先同步账号到 5105
+                        await _hc.post("http://127.0.0.1:5105/api/accounts", json={
+                            "email": acct.email, "token": acct.token or "",
+                            "userId": acct.user_id or "0", "credits": acct.credits or 0,
+                            "orgId": acct.org_id or "",
+                        })
+                                                                        # 提交视频生成（设超时 300s，等完整 SSE 响应）
+                        _r = await _hc.post("http://127.0.0.1:5105/api/v1/videos/generations", json={
+                            "prompt": payload.prompt,
+                            "model": payload.model or "Pixverse-V6.0",
+                            "duration": payload.duration or 10,
+                            "resolution": payload.resolution or "360P",
+                            "aspect_ratio": payload.ratio or "16:9",
+                        }, timeout=300.0)
+                        _data = _r.json() if _r.status_code == 200 else {}
+                        logger.info(f"5105 提交结果: status={_r.status_code}, data_keys={list(_data.keys())}")
+                        _task_id = _data.get("id") or _data.get("task_id", "")
+                        _video_url = _data.get("video_url")
+                        _err_msg = _data.get("error") or _data.get("message", "")
+                        if _err_msg:
+                            logger.error(f"视频生成提交失败: {_err_msg}")
+                            _status = "failed"
+                        elif _video_url:
+                            _status = "success"
+                        else:
+                            _status = "processing"
+                        if _status == "processing":
+                            for _ in range(12):
+                                await asyncio.sleep(15)
+                                try:
+                                    _pr = await _hc.get(f"http://127.0.0.1:5105/api/v1/tasks/{_task_id}")
+                                    if _pr.status_code == 200:
+                                        _pd = _pr.json()
+                                        _pr2 = _pd.get("result", _pd)
+                                        _pu = _pr2.get("video_url")
+                                        if not _pu:
+                                            _record = _pr2.get("record", _pr2)
+                                            if isinstance(_record, dict):
+                                                _pu = _record.get("generation_result")
+                                                if not _pu:
+                                                    _assets = _record.get("assets", [])
+                                                    if _assets and isinstance(_assets, list) and len(_assets) > 0:
+                                                        _pu = _assets[0].get("url")
+                                        if _pu:
+                                            _video_url = _pu
+                                            _status = "success"
+                                            break
+                                        _ps = _pr2.get("status", "")
+                                        if _ps == "failed" or _pr2.get("error"):
+                                            _status = "failed"
+                                            break
+                                except Exception:
+                                    pass
 
-                    logger.info(
-                        f"✅ gen result: code={_status} "
-                        f"video_url={_video_url} email={acct.email}"
-                    )
+                    logger.info(f"✅ gen result: code={_status} video_url={_video_url} email={acct.email}")
 
                     if _status == "success" and _video_url:
                         await bg_db.execute(
@@ -493,7 +489,7 @@ async def create_generation_job(
                         await _release_insmind_account(bg_db, acct)
 
                     else:
-                        err_msg = _data.get("message", "") if isinstance(_data, dict) else str(_data)
+                        err_msg = str(_data.get("message", "")) if isinstance(_data, dict) else str(_data)
                         await bg_db.execute(
                             update(ContentGenerationJob).where(
                                 ContentGenerationJob.id == job_id

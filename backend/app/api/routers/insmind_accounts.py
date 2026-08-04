@@ -474,13 +474,16 @@ async def batch_auto_register_insmind(
     from register_insmind import create_mail as _create_mail
     emails = []
     for i in range(count):
-        try:
-            addr, _ = await _create_mail()
-            emails.append(addr)
-            logger.info(f"已获取邮箱 [{i+1}/{count}]: {addr}")
-        except Exception as e:
-            logger.warning(f"获取邮箱 [{i+1}/{count}] 失败: {e}")
-            emails.append(None)
+            try:
+                addr, _ = await _create_mail()
+                emails.append(addr)
+                logger.info(f"已获取邮箱 [{i+1}/{count}]: {addr}")
+            except Exception as e:
+                logger.warning(f"获取邮箱 [{i+1}/{count}] 失败: {e}")
+                emails.append(None)
+            # 获取邮箱后等 3s，避免 tempmail.ing 限流
+            if i < count - 1:
+                await asyncio.sleep(3)
 
     valid_emails = [e for e in emails if e]
     logger.info(f"成功获取 {len(valid_emails)}/{count} 个邮箱")

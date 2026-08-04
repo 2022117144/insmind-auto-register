@@ -76,6 +76,8 @@ async function refreshAccounts(): Promise<void> {
             req.setTimeout(5000, () => { req.destroy(new Error('Timeout')); });
         });
         const raw: any[] = JSON.parse(data);
+console.log(`[Accounts] Raw data length: ${data.length}, first 200: ${data.substring(0, 200)}`);
+                const oldEmail = accounts[currentAccountIndex % accounts.length]?.email;
         accounts = raw.map(a => ({
             email: a.email || '',
             token: a.token || '',
@@ -85,6 +87,11 @@ async function refreshAccounts(): Promise<void> {
             orgId: a.org_id || (a as any).orgId,
             tokenExpiresAt: undefined,
         }));
+        // 刷新后保持 currentAccountIndex 指向同一个账号
+        if (oldEmail && accounts.length > 0) {
+            const newIdx = accounts.findIndex(a => a.email === oldEmail);
+            if (newIdx >= 0) currentAccountIndex = newIdx;
+        }
         console.log(`[Accounts] Refreshed from backend: ${accounts.length} accounts`);
     } catch (e: any) {
         console.log(`[Accounts] Backend refresh failed: ${e.message}, keeping ${accounts.length} cached`);
@@ -552,8 +559,22 @@ router.post('/v1/videos/generations', async (ctx) => {
             const msgMatch = rawData.match(/"type"\s*:\s*"plain"\s*,\s*"text"\s*:\s*"([^"]+)"/);
             if (errMatch) sseError = `code=${errMatch[0].match(/"code":"(-?\d+)"/)?.[1]}: ${errMatch[1]}`;
             else if (msgMatch) sseError = msgMatch[1];
-            if (sseError) {
+            if (videoUrl) {
+                // 已有视频 URL，直接返回成功
+                console.log(`✅ Video URL found in SSE response`);
+            } else if (sseError && !rawData.includes('.mp4')) {
+                // 有 SSE 错误且没有视频 URL，返回失败
                 console.log(`❌ SSE error detected: ${sseError}`);
+                ctx.body = {
+                    id: taskId, status: 'failed', model, prompt,
+                    duration, resolution, aspect_ratio,
+                    account: account.email,
+                    video_url: null,
+                    error: sseError,
+                    response: rawData,
+                    poll_interval_seconds: 15,
+                };
+                return;
             }
 
             // If no video URL in SSE response, try polling records API
@@ -592,7 +613,7 @@ router.post('/v1/videos/generations', async (ctx) => {
         }
 
         ctx.body = {
-            id: taskId, status: 'processing', model, prompt,
+            id: taskId, status: videoUrl ? 'success' : 'processing', model, prompt,
             duration, resolution, aspect_ratio,
             account: account.email,
             video_url: videoUrl,

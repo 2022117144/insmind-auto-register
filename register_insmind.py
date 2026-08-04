@@ -15,7 +15,7 @@ logger = logging.getLogger("insmind")
 TEMPMAIL_API = "https://api.tempmail.ing"
 INSMIND2API_URL = "http://127.0.0.1:5105"
 POLL_INTERVAL = 3
-POLL_TIMEOUT = 120
+POLL_TIMEOUT = 60
 PROXY = "http://127.0.0.1:7897"
 
 
@@ -39,10 +39,10 @@ async def create_mail() -> Tuple[str, str]:
                     body = r.text[:200]
                     logger.warning(f"tempmail.ing 创建失败 (第{attempt+1}次): {r.status_code} {body}")
                     if r.status_code == 429 or "too many requests" in body.lower() or "slow down" in body.lower():
-                        wait = 5 * (attempt + 1)
+                        wait = 5
+                        wait = 5
                         logger.info(f"限流，等待 {wait}s 重试...")
                         await asyncio.sleep(wait)
-                        continue
                     last_error = f"tempmail.ing 返回 {r.status_code}: {body}"
                     break
             except Exception as e:
@@ -324,7 +324,7 @@ async def register(predefined_email: Optional[str] = None) -> dict:
                         try:
                             await create_page.goto("https://www.insmind.com/creation",
                                                    wait_until="load", timeout=30000)
-                            await create_page.wait_for_timeout(15000)
+                            await create_page.wait_for_timeout(5000)
                         except Exception as e:
                             logger.warning(f"creation 页面加载失败: {e}")
                         finally:
