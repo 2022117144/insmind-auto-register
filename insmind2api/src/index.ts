@@ -39,6 +39,7 @@ interface InsMindAccount {
     email: string;
     token: string;       // token.prod (outer JWT)
     userId: string;
+    credits: number;
     refreshToken?: string;
     tokenExpiresAt?: number;
     orgId?: string;      // token.org_id.prod cookie
@@ -81,6 +82,7 @@ console.log(`[Accounts] Raw data length: ${data.length}, first 200: ${data.subst
             email: a.email || '',
             token: a.token || '',
             userId: a.user_id || (a as any).userId || '0',
+            credits: a.credits || 0,
             refreshToken: a.refresh_token || (a as any).refreshToken,
             orgId: a.org_id || (a as any).orgId,
             tokenExpiresAt: undefined,
@@ -350,13 +352,14 @@ router.get('/accounts', async (ctx) => {
         accounts: accounts.map(a => ({
             email: a.email,
             userId: a.userId,
+            credits: a.credits,
         })),
     };
 });
 
 // Add an account to the pool
 router.post('/accounts', async (ctx) => {
-    const { email, token, userId, refreshToken, orgId } = ctx.request.body as any;
+    const { email, token, userId, credits = 0, refreshToken, orgId } = ctx.request.body as any;
     if (!email || !token) {
         ctx.status = 400;
         ctx.body = { error: 'email and token required' };
@@ -365,7 +368,7 @@ router.post('/accounts', async (ctx) => {
     // Avoid duplicates
     const existing = accounts.find(a => a.email === email);
     if (!existing) {
-        accounts.push({ email, token, userId: String(userId || '0'), refreshToken, orgId });
+        accounts.push({ email, token, userId: String(userId || '0'), credits, refreshToken, orgId });
     } else {
         existing.token = token;
         existing.userId = String(userId || existing.userId);
@@ -550,9 +553,9 @@ router.post('/v1/videos/generations', async (ctx) => {
             if (m1) videoUrl = m1[0];
             else if (m2) videoUrl = m2[0].replace(/\\\//g, '/');
 
-            // 检查 SSE 响应中的错误信息
+            // 检查 SSE 响应中的错误信息（仅 errMatch 有 code+error 才算错误）
             let sseError: string | null = null;
-            // 检查 code+error 或 code+message
+            // 检查 SSE 响应中的错误信息（code+error 或 code+message 都算错误）
             const errMatch = rawData.match(/"code"\s*:\s*"-?\d+"\s*,\s*"error"\s*:\s*"([^"]+)"/);
             const msgMatch = rawData.match(/"code"\s*:\s*"(\d+)"\s*,\s*"message"\s*:\s*"([^"]+)"/);
             if (errMatch) {
@@ -560,25 +563,10 @@ router.post('/v1/videos/generations', async (ctx) => {
             } else if (msgMatch) {
                 sseError = `code=${msgMatch[1]}: ${msgMatch[2]}`;
             }
-            // 仅在 is_error 标记为 true 时检查错误——只查同一消息块内的 plain text
+            // 仅在 is_error 标记为 true 时检查 plain text 错误
             if (!sseError && rawData.includes('"is_error": true')) {
-                // SSE 消息块由 \n\n 分隔，找到包含 is_error 的那个块
-                const blocks = rawData.split('\n\n');
-                let errorText: string | null = null;
-                for (const block of blocks) {
-                    if (block.includes('"is_error": true')) {
-                        // 在这个块里找 plain text（必须是真实的错误文本，含关键词的才算）
-                        const ptMatch = block.match(/"type"\s*:\s*"plain"\s*,\s*"text"\s*:\s*"([^"]+)"/);
-                        if (ptMatch) {
-                            const txt = ptMatch[1].toLowerCase();
-                            if (txt.includes('error') || txt.includes('credit') || txt.includes('insufficient') || txt.includes('fail')) {
-                                errorText = ptMatch[1];
-                            }
-                        }
-                        break;
-                    }
-                }
-                if (errorText) sseError = errorText;
+                const isErrMatch = rawData.match(/"type"\s*:\s*"plain"\s*,\s*"text"\s*:\s*"([^"]+)"/);
+                if (isErrMatch) sseError = isErrMatch[1];
             }
             if (videoUrl) {
                 // 已有视频 URL，直接返回成功

@@ -192,6 +192,7 @@ async function checkAndRefreshAll() {
         }
         else if (timeLeft <= 0) {
             console.log(`[TokenRefresh] 🔴 ${account.email}: token expired, no refresh_token available`);
+            account.credits = -1; // Mark as expired
         }
     }
 }
