@@ -553,16 +553,25 @@ router.post('/v1/videos/generations', async (ctx) => {
             if (m1) videoUrl = m1[0];
             else if (m2) videoUrl = m2[0].replace(/\\\//g, '/');
 
-            // 检查 SSE 响应中的错误信息
+            // 检查 SSE 响应中的错误信息（仅 errMatch 有 code+error 才算错误）
             let sseError: string | null = null;
+            // 检查 SSE 响应中的错误信息（code+error 或 code+message 都算错误）
             const errMatch = rawData.match(/"code"\s*:\s*"-?\d+"\s*,\s*"error"\s*:\s*"([^"]+)"/);
-            const msgMatch = rawData.match(/"type"\s*:\s*"plain"\s*,\s*"text"\s*:\s*"([^"]+)"/);
-            if (errMatch) sseError = `code=${errMatch[0].match(/"code":"(-?\d+)"/)?.[1]}: ${errMatch[1]}`;
-            else if (msgMatch) sseError = msgMatch[1];
+            const msgMatch = rawData.match(/"code"\s*:\s*"(\d+)"\s*,\s*"message"\s*:\s*"([^"]+)"/);
+            if (errMatch) {
+                sseError = `code=${errMatch[0].match(/"code":"(-?\d+)"/)?.[1]}: ${errMatch[1]}`;
+            } else if (msgMatch) {
+                sseError = `code=${msgMatch[1]}: ${msgMatch[2]}`;
+            }
+            // 仅在 is_error 标记为 true 时检查 plain text 错误
+            if (!sseError && rawData.includes('"is_error": true')) {
+                const isErrMatch = rawData.match(/"type"\s*:\s*"plain"\s*,\s*"text"\s*:\s*"([^"]+)"/);
+                if (isErrMatch) sseError = isErrMatch[1];
+            }
             if (videoUrl) {
                 // 已有视频 URL，直接返回成功
                 console.log(`✅ Video URL found in SSE response`);
-            } else if (sseError && !rawData.includes('.mp4')) {
+            } else if (sseError) {
                 // 有 SSE 错误且没有视频 URL，返回失败
                 console.log(`❌ SSE error detected: ${sseError}`);
                 ctx.body = {

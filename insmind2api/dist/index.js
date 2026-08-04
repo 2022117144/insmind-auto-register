@@ -632,14 +632,20 @@ router.post("/v1/videos/generations", async (ctx) => {
       videoUrl = m2[0].replace(/\\\//g, "/");
     let sseError = null;
     const errMatch = rawData.match(/"code"\s*:\s*"-?\d+"\s*,\s*"error"\s*:\s*"([^"]+)"/);
-    const msgMatch = rawData.match(/"type"\s*:\s*"plain"\s*,\s*"text"\s*:\s*"([^"]+)"/);
-    if (errMatch)
+    const msgMatch = rawData.match(/"code"\s*:\s*"(\d+)"\s*,\s*"message"\s*:\s*"([^"]+)"/);
+    if (errMatch) {
       sseError = `code=${errMatch[0].match(/"code":"(-?\d+)"/)?.[1]}: ${errMatch[1]}`;
-    else if (msgMatch)
-      sseError = msgMatch[1];
+    } else if (msgMatch) {
+      sseError = `code=${msgMatch[1]}: ${msgMatch[2]}`;
+    }
+    if (!sseError && rawData.includes('"is_error": true')) {
+      const isErrMatch = rawData.match(/"type"\s*:\s*"plain"\s*,\s*"text"\s*:\s*"([^"]+)"/);
+      if (isErrMatch)
+        sseError = isErrMatch[1];
+    }
     if (videoUrl) {
       console.log(`\u2705 Video URL found in SSE response`);
-    } else if (sseError && !rawData.includes(".mp4")) {
+    } else if (sseError) {
       console.log(`\u274C SSE error detected: ${sseError}`);
       ctx.body = {
         id: taskId,
