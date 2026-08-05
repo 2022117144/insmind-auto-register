@@ -132,10 +132,8 @@ async def sync_account_to_pool(
     credits: int = 0, org_id: str = "",
 ) -> None:
     """确保账号在 insmind2api 池里"""
-    import os as _os
-    _saved = {k: _os.environ.pop(k, None) for k in ['HTTP_PROXY','HTTPS_PROXY','http_proxy','https_proxy','ALL_PROXY','all_proxy']}
     try:
-        async with httpx.AsyncClient(timeout=5.0, trust_env=False) as c:
+        async with httpx.AsyncClient(timeout=5.0) as c:
             pool = await c.get(f"{INSMIND2API_URL}/api/accounts")
             if pool.status_code == 200:
                 data = pool.json()
@@ -149,10 +147,6 @@ async def sync_account_to_pool(
                     logger.info(f"✅ 账号 {email} 已同步到池")
     except Exception as e:
         logger.warning(f"⚠️ 同步池子失败: {e}")
-    finally:
-        for k, v in _saved.items():
-            if v is not None:
-                _os.environ[k] = v
 
 
 # ============ SSE 文本提取（各自一份） ============
@@ -217,44 +211,45 @@ async def generate_text_to_video(
     """文生视频：单轮 SSE，调 generations 端点"""
     await sync_account_to_pool(email, token, user_id, credits, org_id)
 
-    import os as _os2, subprocess as _sp2, json as _j2
-    _saved2 = {k: _os2.environ.pop(k, None) for k in ['HTTP_PROXY','HTTPS_PROXY','http_proxy','https_proxy','ALL_PROXY','all_proxy']}
     try:
-        _payload2 = _j2.dumps({
-            "prompt": prompt, "model": model,
-            "duration": duration, "resolution": resolution,
-            "aspect_ratio": aspect_ratio,
-        })
-        _r2 = _sp2.run(["curl", "-s", "-X", "POST", f"{INSMIND2API_URL}/api/v1/videos/generations",
-            "-H", "Content-Type: application/json", "-d", _payload2],
-            capture_output=True, text=True, timeout=300)
-        if _r2.returncode != 0:
-            return InsMindResult(code="failed", message=f"curl 失败: {_r2.stderr[:200]}")
-        resp_data = _j2.loads(_r2.stdout)
-        task_id = resp_data.get("task_id", "")
-        if not task_id:
-            return InsMindResult(code="failed", message="5105 未返回 task_id")
-        # 轮询结果
-        for _ in range(12):
-            await asyncio.sleep(15)
-            _pr2 = _sp2.run(["curl", "-s", f"{INSMIND2API_URL}/api/v1/tasks/{task_id}"],
-                capture_output=True, text=True, timeout=10)
-            if _pr2.returncode == 0:
-                _pd2 = _j2.loads(_pr2.stdout)
-                _pr22 = _pd2.get("result", _pd2)
-                _pu2 = _pr22.get("video_url")
-                if _pu2:
-                    return InsMindResult(code="success", video_url=_pu2, task_id=task_id)
-                _ps2 = _pr22.get("status", "")
-                if _ps2 == "failed" or _pr22.get("error"):
-                    return InsMindResult(code="failed", message=f"5105 返回失败: {_pr22.get('error', '')}")
-        return InsMindResult(code="failed", message="轮询超时")
+        async with httpx.AsyncClient(timeout=300.0) as c:
+            resp = await c.post(
+                f"{INSMIND2API_URL}/api/v1/videos/generations",
+                json={
+                    "prompt": prompt,
+                    "model": model,
+                    "duration": duration,
+                    "resolution": resolution,
+                    "aspect_ratio": aspect_ratio,
+                },
+            )
+    except httpx.TimeoutException:
+        return InsMindResult(code="failed", message="insmind2api 请求超时 (300s)")
     except Exception as e:
         return InsMindResult(code="failed", message=f"insmind2api 请求异常: {e}")
-    finally:
-        for k, v in _saved2.items():
-            if v is not None:
-                _os2.environ[k] = v
+
+    if resp.status_code != 200:
+        return InsMindResult(
+            code="failed",
+            message=f"insmind2api 返回 {resp.status_code}: {resp.text[:200]}",
+        )
+
+    # 文生视频：用自己的 SSE 文本提取
+    data = resp.json()
+    sse_text = ""
+    raw_resp = (data or {}).get("response", "")
+    if isinstance(raw_resp, str) and raw_resp:
+        sse_text = _text_extract_sse(raw_resp)
+
+    if sse_text:
+        return InsMindResult(
+            code="text_reply", message=sse_text,
+            task_id=data.get("id", ""),
+            raw_response=raw_resp,
+        )
+
+    return _parse_insmind_response(data)
+
 
 # ============ STS 凭证获取（供 shared oss_upload 使用） ============
 
@@ -295,7 +290,7 @@ async def _get_account_sts() -> Optional[dict]:
         return None
 
     try:
-        async with httpx.AsyncClient(timeout=30.0, trust_env=False) as c:
+        async with httpx.AsyncClient(timeout=30.0) as c:
             sts_resp = await c.post(
                 "https://www.insmind.com/api/tb-dam/asset/upload/tokens",
                 json={"format": "jpg", "content_id": "", "dir": "", "device_id": "python-upload"},
@@ -352,7 +347,7 @@ async def _upload_to_oss(
     inner_token = payload.get("access_token", "")
 
     try:
-        async with httpx.AsyncClient(timeout=30.0, trust_env=False) as c:
+        async with httpx.AsyncClient(timeout=30.0) as c:
             sts_resp = await c.post(
                 "https://www.insmind.com/api/tb-dam/asset/upload/tokens",
                 json={"format": ext, "content_id": "", "dir": "", "device_id": "python-upload"},
@@ -486,10 +481,8 @@ async def generate_image_to_video(
 
     await sync_account_to_pool(email, token, user_id, credits, org_id)
 
-    import os as _os3
-    _saved3 = {k: _os3.environ.pop(k, None) for k in ['HTTP_PROXY','HTTPS_PROXY','http_proxy','https_proxy','ALL_PROXY','all_proxy']}
     try:
-        async with httpx.AsyncClient(timeout=300.0, trust_env=False) as c:
+        async with httpx.AsyncClient(timeout=300.0) as c:
             resp = await c.post(
                 f"{INSMIND2API_URL}/api/v1/videos/generations-image",
                 json={

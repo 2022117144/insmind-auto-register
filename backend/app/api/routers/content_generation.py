@@ -396,77 +396,38 @@ async def create_generation_job(
         await db.refresh(job)
         job_id = job.id
 
-        # 3. 后台异步执行：直接调 5105 API（用 httpx 替代 subprocess+curl）
+        # 3. 后台异步执行：调 insmind_gen 模块（自动分发文生/图生视频）
         async def _background_gen():
             logger.info("🔥 _background_gen 被调用了!")
             nonlocal acct
+            from app.services.insmind_gen import generate_video
             async with async_session_factory() as bg_db:
                 try:
-                    import json as _j
-                    async with httpx.AsyncClient(timeout=300.0, proxy=None) as _hc:
-                        # 先同步账号到 5105
-                        await _hc.post("http://127.0.0.1:5105/api/accounts", json={
-                            "email": acct.email, "token": acct.token or "",
-                            "userId": acct.user_id or "0", "credits": acct.credits or 0,
-                            "orgId": acct.org_id or "",
-                        })
-                                                                        # 提交视频生成（设超时 300s，等完整 SSE 响应）
-                        _r = await _hc.post("http://127.0.0.1:5105/api/v1/videos/generations", json={
-                            "prompt": payload.prompt,
-                            "model": payload.model or "Pixverse-V6.0",
-                            "duration": payload.duration or 10,
-                            "resolution": payload.resolution or "360P",
-                            "aspect_ratio": payload.ratio or "16:9",
-                        }, timeout=300.0)
-                        _data = _r.json() if _r.status_code == 200 else {}
-                        logger.info(f"5105 提交结果: status={_r.status_code}, data_keys={list(_data.keys())}")
-                        _task_id = _data.get("id") or _data.get("task_id", "")
-                        _video_url = _data.get("video_url")
-                        _err_msg = _data.get("error") or _data.get("message", "")
-                        if _video_url:
-                            _status = "success"
-                        elif _err_msg:
-                            logger.error(f"视频生成提交失败: {_err_msg}")
-                            _status = "failed"
-                        else:
-                            _status = "processing"
-                        if _status == "processing":
-                            for _ in range(12):
-                                await asyncio.sleep(15)
-                                try:
-                                    _pr = await _hc.get(f"http://127.0.0.1:5105/api/v1/tasks/{_task_id}")
-                                    if _pr.status_code == 200:
-                                        _pd = _pr.json()
-                                        _pr2 = _pd.get("result", _pd)
-                                        _pu = _pr2.get("video_url")
-                                        if not _pu:
-                                            _record = _pr2.get("record", _pr2)
-                                            if isinstance(_record, dict):
-                                                _pu = _record.get("generation_result")
-                                                if not _pu:
-                                                    _assets = _record.get("assets", [])
-                                                    if _assets and isinstance(_assets, list) and len(_assets) > 0:
-                                                        _pu = _assets[0].get("url")
-                                        if _pu:
-                                            _video_url = _pu
-                                            _status = "success"
-                                            break
-                                        _ps = _pr2.get("status", "")
-                                        if _ps == "failed" or _pr2.get("error"):
-                                            _status = "failed"
-                                            break
-                                except Exception:
-                                    pass
+                    result = await generate_video(
+                        email=acct.email, token=acct.token or "",
+                        user_id=acct.user_id or "", org_id=acct.org_id or "",
+                        credits=acct.credits or 0,
+                        prompt=payload.prompt,
+                        model=payload.model or "Pixverse-V6.0",
+                        duration=payload.duration or 10,
+                        resolution=payload.resolution or "360P",
+                        aspect_ratio=payload.ratio or "16:9",
+                        input_images=payload.input_images,
+                    )
+                    logger.info("input_images value: %s", payload.input_images)
 
-                    logger.info(f"✅ gen result: code={_status} video_url={_video_url} email={acct.email}")
+                    logger.info(
+                        "gen result: code=%s video_url=%s email=%s",
+                        result.code, result.video_url, acct.email
+                    )
 
-                    if _status == "success" and _video_url:
+                    if result.code == "success" and result.video_url:
                         await bg_db.execute(
                             update(ContentGenerationJob).where(
                                 ContentGenerationJob.id == job_id
                             ).values(
                                 status="success",
-                                output_urls=json.dumps([_video_url]),
+                                output_urls=json.dumps([result.video_url]),
                                 remote_task_id=job_id,
                                 updated_at=datetime.now(),
                             )
@@ -474,14 +435,25 @@ async def create_generation_job(
                         await bg_db.commit()
                         await _delete_insmind_account(bg_db, acct)
 
-                    elif _status == "processing":
+                    elif result.code == "function_call":
                         await bg_db.execute(
                             update(ContentGenerationJob).where(
                                 ContentGenerationJob.id == job_id
                             ).values(
                                 status="processing",
-                                error_message=None,
-                                remote_task_id=job_id,
+                                remote_task_id=result.task_id or job_id,
+                                updated_at=datetime.now(),
+                            )
+                        )
+                        await bg_db.commit()
+
+                    elif result.code == "text_reply":
+                        await bg_db.execute(
+                            update(ContentGenerationJob).where(
+                                ContentGenerationJob.id == job_id
+                            ).values(
+                                status="failed",
+                                error_message=result.message or "AI returned text instead of video",
                                 updated_at=datetime.now(),
                             )
                         )
@@ -489,33 +461,37 @@ async def create_generation_job(
                         await _release_insmind_account(bg_db, acct)
 
                     else:
-                        err_msg = str(_data.get("error") or _data.get("message", "")) if isinstance(_data, dict) else str(_data)
                         await bg_db.execute(
                             update(ContentGenerationJob).where(
                                 ContentGenerationJob.id == job_id
                             ).values(
                                 status="failed",
-                                error_message=err_msg or "insmind2api 返回 502",
-                                remote_task_id=job_id,
+                                error_message=result.message or "Unknown error",
                                 updated_at=datetime.now(),
                             )
                         )
                         await bg_db.commit()
                         await _release_insmind_account(bg_db, acct)
 
-                except Exception as e:
-                    logger.error(f"SSE 异常 job_id={job_id}: {e}")
-                    await bg_db.execute(
-                        update(ContentGenerationJob).where(
-                            ContentGenerationJob.id == job_id
-                        ).values(
-                            status="failed",
-                            error_message=str(e),
-                            updated_at=datetime.now(),
+                except Exception as exc:
+                    logger.error("background_gen exception: %s", exc, exc_info=True)
+                    try:
+                        await bg_db.execute(
+                            update(ContentGenerationJob).where(
+                                ContentGenerationJob.id == job_id
+                            ).values(
+                                status="failed",
+                                error_message=str(exc)[:500],
+                                updated_at=datetime.now(),
+                            )
                         )
-                    )
-                    await bg_db.commit()
-                    await _release_insmind_account(bg_db, acct)
+                        await bg_db.commit()
+                    except:
+                        pass
+                    try:
+                        await _release_insmind_account(bg_db, acct)
+                    except:
+                        pass
 
         asyncio.create_task(_background_gen())
         return _to_job_response(job)
