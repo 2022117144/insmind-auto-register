@@ -461,47 +461,34 @@ class BatchRegisterResponse(BaseModel):
 
 @router.post("/insmind/accounts/auto-register-batch", response_model=BatchRegisterResponse)
 async def batch_auto_register_insmind(
-    count: int = Query(3, ge=1, le=5, description="并发注册数量 (1-5)"),
+    count: int = Query(3, ge=1, le=20, description="并发注册数量 (1-20)"),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    批量并发注册 insMind 账号。
-    限制最大 5 并发，每个注册使用独立 Playwright 浏览器进程。
+    批量注册 insMind 账号 — 流水线模式：
+    1. 获取一个邮箱（自带重试，限流等 5s）
+    2. 立即异步启动注册（不阻塞循环）
+    3. 等 3s 获取下一个邮箱
+    4. 注册失败自动重试 2 次
     """
     import subprocess
     import asyncio
     import re as re_mod
+    import os as _os
+    import sys as _sys
 
     script_path = "E:/视频生成/dreamina-auto-register-main/register_insmind.py"
     python_cmd = "E:/视频生成/dreamina-auto-register-main/backend/.venv_win/Scripts/python.exe"
-    MAX_CONCURRENT = 3  # Playwright 很重，限制并发
+    MAX_RETRIES = 2
 
-    # 第一步：串行获取邮箱（调 register_insmind 的 create_mail，自带重试）
-    import os as _os
-    import sys as _sys
     _script_dir = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))))
     if _script_dir not in _sys.path:
         _sys.path.insert(0, _script_dir)
     from register_insmind import create_mail as _create_mail
-    emails = []
-    for i in range(count):
-            try:
-                addr, _ = await _create_mail()
-                emails.append(addr)
-                logger.info(f"已获取邮箱 [{i+1}/{count}]: {addr}")
-            except Exception as e:
-                logger.warning(f"获取邮箱 [{i+1}/{count}] 失败: {e}")
-                emails.append(None)
-            # 获取邮箱后等 3s，避免 tempmail.ing 限流
-            if i < count - 1:
-                await asyncio.sleep(3)
 
-    valid_emails = [e for e in emails if e]
-    logger.info(f"成功获取 {len(valid_emails)}/{count} 个邮箱")
+    semaphore = asyncio.Semaphore(3)
 
-    semaphore = asyncio.Semaphore(MAX_CONCURRENT)
-
-    async def _run_one(email: str) -> dict:
+    async def _run_one(email: str, retry: int = 0) -> dict:
         async with semaphore:
             loop = asyncio.get_event_loop()
             proc = await loop.run_in_executor(
@@ -520,7 +507,7 @@ async def batch_auto_register_insmind(
                     logger.info(f"批量子进程输出 ({len(output)} 字符): {output[:300]}")
                 else:
                     logger.warning("批量子进程输出为空")
-                result = {"success": False, "error": "No output"}
+                result = {"success": False, "error": "No output", "email": email}
                 json_match = re_mod.search(r'\{[^{}]*"success"[^{}]*\}', output)
                 if json_match:
                     try:
@@ -530,12 +517,12 @@ async def batch_auto_register_insmind(
                         result, _ = decoder.raw_decode(json_str)
                     except Exception as e:
                         logger.warning(f"批量 JSON 解析失败: {e}")
-                        result = {"success": False, "error": "Parse failed"}
+                        result = {"success": False, "error": "Parse failed", "email": email}
                 if result.get("success") and result.get("org_id"):
                     try:
                         now = datetime.utcnow()
                         account = InsMindAccount(
-                            email=result.get("email", ""),
+                            email=result.get("email", email),
                             token=result.get("token", ""),
                             refresh_token=result.get("refresh_token", "") or "",
                             user_id=result.get("userId", "") or "",
@@ -552,30 +539,56 @@ async def batch_auto_register_insmind(
                         except Exception:
                             pass
                 elif result.get("success") and not result.get("org_id"):
-                    logger.warning(f"⏭️ 账号 {result.get('email')} 无 org_id，跳过入库")
+                    logger.warning(f"跳过账号 {email} 无 org_id")
+
+                if not result.get("success") and retry < MAX_RETRIES:
+                    err_msg = result.get("error", "未知")
+                    logger.warning(f"重试账号 {email} 第{retry+1}次 原因={err_msg}")
+                    await asyncio.sleep(3)
+                    return await _run_one(email, retry + 1)
+
                 return result
             except asyncio.TimeoutError:
                 proc.kill()
-                return {"success": False, "error": "Timeout"}
+                if retry < MAX_RETRIES:
+                    logger.warning(f"重试账号 {email} 超时 第{retry+1}次")
+                    await asyncio.sleep(3)
+                    return await _run_one(email, retry + 1)
+                return {"success": False, "error": "Timeout", "email": email}
             except Exception as e:
-                return {"success": False, "error": str(e)}
+                if retry < MAX_RETRIES:
+                    logger.warning(f"重试账号 {email} 异常 第{retry+1}次: {e}")
+                    await asyncio.sleep(3)
+                    return await _run_one(email, retry + 1)
+                return {"success": False, "error": str(e), "email": email}
 
-    logger.info(f"🚀 开始批量注册 {count} 个 insMind 账号 (并发 {MAX_CONCURRENT})...")
-    tasks = [_run_one(email) for email in valid_emails]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    pending_tasks = []
+    results = []
+    for i in range(count):
+        try:
+            addr, _ = await _create_mail()
+            logger.info(f"已获取邮箱 [{i+1}/{count}]: {addr}")
+            task = asyncio.create_task(_run_one(addr))
+            pending_tasks.append(task)
+        except Exception as e:
+            logger.warning(f"获取邮箱 [{i+1}/{count}] 失败: {e}")
+            results.append({"success": False, "error": str(e), "email": None})
+        if i < count - 1:
+            await asyncio.sleep(3)
 
-    parsed = []
-    for r in results:
-        if isinstance(r, dict):
-            parsed.append(r)
-        else:
-            parsed.append({"success": False, "error": str(r)})
+    if pending_tasks:
+        done = await asyncio.gather(*pending_tasks, return_exceptions=True)
+        for r in done:
+            if isinstance(r, dict):
+                results.append(r)
+            else:
+                results.append({"success": False, "error": str(r), "email": None})
 
-    success_count = sum(1 for r in parsed if r.get("success"))
+    success_count = sum(1 for r in results if r.get("success"))
     failed_count = count - success_count
     logger.info(f"批量注册完成: {success_count}/{count} 成功")
     if failed_count > 0:
-        for r in parsed:
+        for r in results:
             if not r.get("success"):
                 logger.warning(f"  注册失败: {r.get('email', '?')} 原因={r.get('error', '未知')}")
 
@@ -583,9 +596,8 @@ async def batch_auto_register_insmind(
         total=count,
         success=success_count,
         failed=count - success_count,
-        results=parsed,
+        results=results,
     )
-
 
 class InsMindGenerateRequest(BaseModel):
     """insMind 视频生成请求"""
