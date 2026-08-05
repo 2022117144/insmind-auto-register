@@ -96,10 +96,7 @@ console.log(`[Accounts] Raw data length: ${data.length}, first 200: ${data.subst
     }
 }
 
-// Start periodic refresh (60s interval to reduce load on backend)
-setInterval(() => refreshAccounts(), 60000);
-
-// Initial load
+// Initial load only — no periodic refresh, refreshAccounts is called on-demand before each generation
 refreshAccounts().then(() => {
     console.log(`📧 Accounts pool: ${accounts.length}`);
     initTokenRefresh(() => accounts);
@@ -475,7 +472,10 @@ router.post('/v1/videos/generations', async (ctx) => {
     const body = ctx.request.body as any;
     const { prompt, model = 'Seedance-2.0-Mini', duration = 5, resolution = '480P', aspect_ratio = '16:9' } = body;
 
-    const account = getNextAccount();
+        // 刷新账号池（确保最新）
+        await refreshAccounts();
+
+        const account = getNextAccount();
     if (!account) {
         ctx.status = 402;
         ctx.body = { error: 'No accounts available' };
@@ -668,8 +668,11 @@ router.post('/v1/videos/generations-image', async (ctx) => {
         return;
     }
 
-    // Use the specified account if provided (avoids round-robin mismatch with OSS upload)
-    let account: InsMindAccount | null = null;
+    // 刷新账号池（确保最新）
+        await refreshAccounts();
+
+        // Use the specified account if provided (avoids round-robin mismatch with OSS upload)
+        let account: InsMindAccount | null = null;
     if (account_email) {
         account = accounts.find(a => a.email === account_email) || null;
     }
@@ -808,8 +811,9 @@ router.post('/v1/videos/generations-image', async (ctx) => {
             confirmPayload.thread_id = threadId;
             confirmPayload.local_message_id = `${taskId}-confirm`;
             confirmPayload.content.prompt = [
-                { type: 'text', content: `EXECUTE NOW. Use ${model} to generate the video immediately. Do NOT ask for confirmation again. Settings: resolution=${resolution}, duration=${duration}s. Prompt: ${prompt}` }
-            ];
+                            ...mediaPromptItems,
+                            { type: 'text', content: `EXECUTE NOW. Use ${model} to generate the video immediately. Do NOT ask for confirmation again. Settings: resolution=${resolution}, duration=${duration}s. Prompt: ${prompt}` }
+                        ];
 
             try {
                         const confirmResult = await sseFetch('https://sse.insmind.com/api/ai-agent/v1/thread/completion', JSON.stringify(confirmPayload), sseHeaders, 300000);
@@ -827,8 +831,9 @@ router.post('/v1/videos/generations-image', async (ctx) => {
                 finalPayload.thread_id = threadId;
                 finalPayload.local_message_id = `${taskId}-final`;
                 finalPayload.content.prompt = [
-                    { type: 'text', content: `I said EXECUTE ${model} NOW. Generate the video. Do not ask again. ${prompt}` }
-                ];
+                                    ...mediaPromptItems,
+                                    { type: 'text', content: `I said EXECUTE ${model} NOW. Generate the video. Do not ask again. ${prompt}` }
+                                ];
                 try {
                     const finalResult = await sseFetch(
                         'https://sse.insmind.com/api/ai-agent/v1/thread/completion',

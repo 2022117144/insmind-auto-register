@@ -70,9 +70,7 @@ async function refreshAccounts() {
         console.log(`[Accounts] Backend refresh failed: ${e.message}, keeping ${accounts.length} cached`);
     }
 }
-// Start periodic refresh (60s interval to reduce load on backend)
-setInterval(() => refreshAccounts(), 60000);
-// Initial load
+// Initial load only — no periodic refresh, refreshAccounts is called on-demand before each generation
 refreshAccounts().then(() => {
     console.log(`📧 Accounts pool: ${accounts.length}`);
     (0, token_refresh_1.initTokenRefresh)(() => accounts);
@@ -427,6 +425,8 @@ router.post('/v1/videos/pricing', async (ctx) => {
 router.post('/v1/videos/generations', async (ctx) => {
     const body = ctx.request.body;
     const { prompt, model = 'Seedance-2.0-Mini', duration = 5, resolution = '480P', aspect_ratio = '16:9' } = body;
+    // 刷新账号池（确保最新）
+    await refreshAccounts();
     const account = getNextAccount();
     if (!account) {
         ctx.status = 402;
@@ -617,6 +617,8 @@ router.post('/v1/videos/generations-image', async (ctx) => {
         ctx.body = { error: 'image_url or image_urls is required for image-to-video generation' };
         return;
     }
+    // 刷新账号池（确保最新）
+    await refreshAccounts();
     // Use the specified account if provided (avoids round-robin mismatch with OSS upload)
     let account = null;
     if (account_email) {
@@ -750,6 +752,7 @@ router.post('/v1/videos/generations-image', async (ctx) => {
         confirmPayload.thread_id = threadId;
         confirmPayload.local_message_id = `${taskId}-confirm`;
         confirmPayload.content.prompt = [
+            ...mediaPromptItems,
             { type: 'text', content: `EXECUTE NOW. Use ${model} to generate the video immediately. Do NOT ask for confirmation again. Settings: resolution=${resolution}, duration=${duration}s. Prompt: ${prompt}` }
         ];
         try {
@@ -769,6 +772,7 @@ router.post('/v1/videos/generations-image', async (ctx) => {
             finalPayload.thread_id = threadId;
             finalPayload.local_message_id = `${taskId}-final`;
             finalPayload.content.prompt = [
+                ...mediaPromptItems,
                 { type: 'text', content: `I said EXECUTE ${model} NOW. Generate the video. Do not ask again. ${prompt}` }
             ];
             try {
