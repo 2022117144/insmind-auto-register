@@ -25,6 +25,27 @@ import crypto from 'crypto';
 import child_process from 'child_process';
 import fs from 'fs';
 import { initTokenRefresh, parseTokenProd } from './token-refresh';
+import { HttpsProxyAgent } from 'https-proxy-agent';
+
+let _proxyAgent: HttpsProxyAgent<string> | null = null;
+
+function getProxyAgent(): HttpsProxyAgent<string> | null {
+    if (_proxyAgent) return _proxyAgent;
+    if (process.env.HTTPS_PROXY) {
+        _proxyAgent = new HttpsProxyAgent(process.env.HTTPS_PROXY);
+        console.log('Proxy agent from env: ' + process.env.HTTPS_PROXY);
+        return _proxyAgent;
+    }
+    const PORTS = [7897, 7890];
+    for (const port of PORTS) {
+        const url = 'http://127.0.0.1:' + port;
+        _proxyAgent = new HttpsProxyAgent(url);
+        console.log('Proxy agent ready: ' + url);
+        return _proxyAgent;
+    }
+    console.log('No local proxy detected');
+    return null;
+}
 
 // OSS accelerate endpoint IP (static — bypasses DNS + proxy issues on Windows)
 const OSS_ACCELERATE_IP = '47.253.30.33';
@@ -147,6 +168,8 @@ function getInnerToken(account: InsMindAccount): string {
 }
 
 function makeRequest(options: http.RequestOptions, body?: string): Promise<{ status: number; data: string }> {
+    const agent = getProxyAgent();
+    if (agent) options.agent = agent;
     return new Promise((resolve) => {
         const req = https.request(options, (res) => {
             let data = '';
@@ -399,14 +422,29 @@ router.get('/models', async (ctx) => {
 
 async function sseFetch(url: string, bodyStr: string, headers: Record<string, string>, timeoutMs = 300000): Promise<string> {
     try {
-        const resp = await fetch(url, {
-            method: 'POST',
-            headers,
-            body: bodyStr,
-            signal: AbortSignal.timeout(timeoutMs),
+        const u = new URL(url);
+        const agent = getProxyAgent();
+        const resp = await new Promise<string>((resolve, reject) => {
+            const req = https.request({
+                hostname: u.hostname,
+                path: u.pathname + u.search,
+                method: 'POST',
+                headers,
+                timeout: timeoutMs,
+                agent: agent || undefined,
+            }, (res) => {
+                let data = '';
+                res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+                res.on('end', () => resolve(data));
+            });
+            req.on('error', (err) => { console.log('sseFetch error: ' + err.message); resolve(''); });
+            req.on('timeout', () => { req.destroy(); resolve(''); });
+            req.write(bodyStr);
+            req.end();
         });
-        return await resp.text();
-    } catch {
+        return resp;
+    } catch (e: any) {
+        console.log('sseFetch exception: ' + e.message);
         return '';
     }
 }
