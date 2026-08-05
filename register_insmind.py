@@ -15,7 +15,7 @@ logger = logging.getLogger("insmind")
 TEMPMAIL_API = "https://api.tempmail.ing"
 INSMIND2API_URL = "http://127.0.0.1:5105"
 POLL_INTERVAL = 3
-POLL_TIMEOUT = 60
+POLL_TIMEOUT = 120
 PROXY = "http://127.0.0.1:7897"
 
 
@@ -143,8 +143,13 @@ async def register(predefined_email: Optional[str] = None) -> dict:
                 await ev.first.click()
                 await page.wait_for_timeout(1500)
 
-            await page.locator('button:has-text("Send code")').first.click()
-            await page.wait_for_timeout(1500)
+            # 先点 Send code（CAPTCHA 弹窗会遮挡，用 force=True 绕过）
+            # 用 dispatchEvent 绕过 CAPTCHA 弹窗遮挡
+            btn_found = await page.evaluate('() => { const b = Array.from(document.querySelectorAll("button")).find(x => x.textContent.includes("Send code")); if(b) { b.dispatchEvent(new Event("click", {bubbles: true})); return true; } return false; }')
+            if not btn_found:
+                # 备用：用 Playwright locator dispatchEvent
+                await page.locator('button:has-text("Send code")').first.dispatch_event('click')
+            await page.wait_for_timeout(2000)
 
             # CAPTCHA 处理（使用云打码 jfbym.com）
             JFBYM_TOKEN = "sLchUssAXpcRZSyMUBlFdx-xkTNXw8LRb6-hYkm7m_4"
@@ -158,28 +163,28 @@ async def register(predefined_email: Optional[str] = None) -> dict:
 
                 # 获取 SVG 位置并截图（2x 缩放提高精度）
                 rect = await page.evaluate("""() => {
-                    const el = document.querySelector('gdwc-modal-capcha');
-                    const svg = el?.shadowRoot?.querySelector('svg');
+                    const el = document.querySelector("gdwc-modal-capcha");
+                    const svg = el?.shadowRoot?.querySelector("svg");
                     if (!svg) return null;
                     const r = svg.getBoundingClientRect();
                     return {x: r.x, y: r.y, w: r.width, h: r.height};
                 }""")
 
-                if rect and rect['w'] > 0:
+                if rect and rect["w"] > 0:
                     # 4x 放大 SVG
                     await page.evaluate("""() => {
-                        const el = document.querySelector('gdwc-modal-capcha');
-                        const svg = el?.shadowRoot?.querySelector('svg');
+                        const el = document.querySelector("gdwc-modal-capcha");
+                        const svg = el?.shadowRoot?.querySelector("svg");
                         if (!svg) return;
-                        svg.style.transform = 'scale(6)';
-                        svg.style.transformOrigin = 'top left';
+                        svg.style.transform = "scale(6)";
+                        svg.style.transformOrigin = "top left";
                     }""")
                     await page.wait_for_timeout(200)
 
                     # 获取缩放后的 SVG 位置（可能有 shadow DOM 渲染延迟）
                     svg_rect = await page.evaluate("""() => {
-                        const el = document.querySelector('gdwc-modal-capcha');
-                        const svg = el?.shadowRoot?.querySelector('svg');
+                        const el = document.querySelector("gdwc-modal-capcha");
+                        const svg = el?.shadowRoot?.querySelector("svg");
                         if (!svg) return null;
                         const r = svg.getBoundingClientRect();
                         if (!r || !r.width || r.width <= 0) return null;
@@ -209,33 +214,33 @@ async def register(predefined_email: Optional[str] = None) -> dict:
                             "type": "10110",
                         })
                         _jd = _jr.json()
-                    code = _jd.get("data", {}).get("data", "") if _jd.get("code") == 10000 else ""
-                    logger.info(f"云码: {code if code else '识别失败'}")
-                    if not code:
+                    captcha_code = _jd.get("data", {}).get("data", "") if _jd.get("code") == 10000 else ""
+                    logger.info(f"云码: {captcha_code if captcha_code else '识别失败'}")
+                    if not captcha_code:
                         await page.wait_for_timeout(1000)
                     # 恢复SVG大小
                     await page.evaluate("""() => {
-                        const el = document.querySelector('gdwc-modal-capcha');
-                        const svg = el?.shadowRoot?.querySelector('svg');
+                        const el = document.querySelector("gdwc-modal-capcha");
+                        const svg = el?.shadowRoot?.querySelector("svg");
                         if (!svg) return;
-                        svg.style.transform = '';
+                        svg.style.transform = "";
                     }""")
-                    if code and len(code) >= 2:
+                    if captcha_code and len(captcha_code) >= 2:
                         # 只接受纯英数字验证码，跳过乱码
                         import re as re_check
-                        if not re_check.match(r'^[a-zA-Z0-9\-_]{2,8}$', code.strip()):
-                            logger.info(f"OCR 乱码跳过: {code}")
+                        if not re_check.match(r"^[a-zA-Z0-9\-_]{2,8}$", captcha_code.strip()):
+                            logger.info(f"OCR 乱码跳过: {captcha_code}")
                             # 换一个
                             ch = page.locator("button:has-text('Change one')")
                             if await ch.count() > 0:
                                 await ch.first.click()
                                 await page.wait_for_timeout(1500)
                             continue
-                        logger.info(f"OCR: {code}")
+                        logger.info(f"OCR: {captcha_code}")
                         inp = page.locator("gdwc-modal-capcha input")
                         if await inp.count() == 0:
                             inp = page.locator("input[placeholder*='Fill in']")
-                        await inp.first.fill(code)
+                        await inp.first.fill(captcha_code)
                         await page.wait_for_timeout(500)
                         sb = page.locator("gdwc-modal-capcha button:has-text('Submit')")
                         if await sb.count() > 0:
@@ -247,7 +252,7 @@ async def register(predefined_email: Optional[str] = None) -> dict:
                                 # 重新点 Send code（CAPTCHA 通过后可能需要）
                                 sc = page.locator('button:has-text("Send code")')
                                 if await sc.count() > 0:
-                                    await sc.first.click()
+                                    await sc.first.click(force=True)
                                     await page.wait_for_timeout(1500)
                                 break
                             else:
@@ -257,11 +262,20 @@ async def register(predefined_email: Optional[str] = None) -> dict:
                 ch = page.locator("button:has-text('Change one')")
                 if await ch.count() > 0:
                     await ch.first.click()
-                    await page.wait_for_timeout(1500)
-
-            # 轮询验证码
-            logger.info("等待验证码...")
-            code = await poll_code(email, mail_token)
+                    await page.wait_for_timeout(1500)            # 轮询验证码 — 最多重试 1 次（共 2 轮 × 60s）
+            MAX_CODE_RETRIES = 2
+            code = None
+            for code_attempt in range(MAX_CODE_RETRIES):
+                logger.info(f"等待验证码... (第 {code_attempt+1}/{MAX_CODE_RETRIES} 轮)")
+                code = await poll_code(email, mail_token)
+                if code:
+                    break
+                if code_attempt < MAX_CODE_RETRIES - 1:
+                    logger.info("验证码超时，重新发送...")
+                    sc = page.locator('button:has-text("Send code")')
+                    if await sc.count() > 0:
+                        await sc.first.click()
+                        await page.wait_for_timeout(1500)
             if not code:
                 result["error"] = "验证码超时"
                 return result

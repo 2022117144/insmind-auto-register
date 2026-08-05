@@ -370,6 +370,11 @@ async def auto_register_insmind_account(db: AsyncSession = Depends(get_db)):
     )
     stdout_bytes = await loop.run_in_executor(None, lambda: proc.communicate(timeout=180))
     output = stdout_bytes[0].decode("utf-8", errors="replace") if stdout_bytes[0] else ""
+    if output:
+        logger.info(f"子进程输出 ({len(output)} 字符): {output[:500]}")
+        logger.info(f"子进程输出末尾: ...{output[-500:]}")
+    else:
+        logger.warning("子进程输出为空")
 
     # 解析输出中的 RESULT JSON
     result = {"success": False, "error": "脚本无输出"}
@@ -379,9 +384,15 @@ async def auto_register_insmind_account(db: AsyncSession = Depends(get_db)):
     result_idx = output.find(result_marker)
     if result_idx >= 0:
         json_str = output[result_idx + len(result_marker):].strip()
+        logger.info(f"RESULT JSON 原始字符串: {json_str[:300]}")
+        logger.info(f"RESULT JSON 长度: {len(json_str)}, 末尾: ...{json_str[-100:]}")
         try:
-            result = json.loads(json_str)
-        except Exception:
+            # 只解析第一个完整的 JSON 对象（忽略后面的日志行）
+            import json as _json_mod
+            decoder = _json_mod.JSONDecoder()
+            result, _ = decoder.raw_decode(json_str)
+        except Exception as e:
+            logger.warning(f"JSON 解析失败: {e}")
             result = {"success": False, "error": "解析注册结果失败"}
 
     # 注册成功则存入本库（仅当有 org_id，否则无意义）
@@ -505,12 +516,20 @@ async def batch_auto_register_insmind(
             try:
                 stdout_bytes = await loop.run_in_executor(None, lambda: proc.communicate(timeout=180))
                 output = stdout_bytes[0].decode("utf-8", errors="replace") if stdout_bytes[0] else ""
+                if output:
+                    logger.info(f"批量子进程输出 ({len(output)} 字符): {output[:300]}")
+                else:
+                    logger.warning("批量子进程输出为空")
                 result = {"success": False, "error": "No output"}
                 json_match = re_mod.search(r'\{[^{}]*"success"[^{}]*\}', output)
                 if json_match:
                     try:
-                        result = json.loads(json_match.group())
-                    except Exception:
+                        json_str = json_match.group()
+                        import json as _json_mod
+                        decoder = _json_mod.JSONDecoder()
+                        result, _ = decoder.raw_decode(json_str)
+                    except Exception as e:
+                        logger.warning(f"批量 JSON 解析失败: {e}")
                         result = {"success": False, "error": "Parse failed"}
                 if result.get("success") and result.get("org_id"):
                     try:
