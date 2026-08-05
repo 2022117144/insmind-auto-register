@@ -284,7 +284,6 @@ async function refreshAccounts() {
     console.log(`[Accounts] Backend refresh failed: ${e.message}, keeping ${accounts.length} cached`);
   }
 }
-setInterval(() => refreshAccounts(), 6e4);
 refreshAccounts().then(() => {
   console.log(`\u{1F4E7} Accounts pool: ${accounts.length}`);
   initTokenRefresh(() => accounts);
@@ -601,6 +600,7 @@ router.post("/v1/videos/pricing", async (ctx) => {
 router.post("/v1/videos/generations", async (ctx) => {
   const body = ctx.request.body;
   const { prompt, model = "Seedance-2.0-Mini", duration = 5, resolution = "480P", aspect_ratio = "16:9" } = body;
+  await refreshAccounts();
   const account = getNextAccount();
   if (!account) {
     ctx.status = 402;
@@ -780,6 +780,7 @@ router.post("/v1/videos/generations-image", async (ctx) => {
     ctx.body = { error: "image_url or image_urls is required for image-to-video generation" };
     return;
   }
+  await refreshAccounts();
   let account = null;
   if (account_email) {
     account = accounts.find((a) => a.email === account_email) || null;
@@ -910,6 +911,7 @@ router.post("/v1/videos/generations-image", async (ctx) => {
     confirmPayload.thread_id = threadId;
     confirmPayload.local_message_id = `${taskId}-confirm`;
     confirmPayload.content.prompt = [
+      ...mediaPromptItems,
       { type: "text", content: `EXECUTE NOW. Use ${model} to generate the video immediately. Do NOT ask for confirmation again. Settings: resolution=${resolution}, duration=${duration}s. Prompt: ${prompt}` }
     ];
     try {
@@ -926,6 +928,7 @@ router.post("/v1/videos/generations-image", async (ctx) => {
       finalPayload.thread_id = threadId;
       finalPayload.local_message_id = `${taskId}-final`;
       finalPayload.content.prompt = [
+        ...mediaPromptItems,
         { type: "text", content: `I said EXECUTE ${model} NOW. Generate the video. Do not ask again. ${prompt}` }
       ];
       try {
