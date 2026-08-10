@@ -414,7 +414,6 @@ async def create_generation_job(
                         aspect_ratio=payload.ratio or "16:9",
                         input_images=payload.input_images,
                     )
-                    logger.info("input_images value: %s", payload.input_images)
 
                     logger.info(
                         "gen result: code=%s video_url=%s email=%s",

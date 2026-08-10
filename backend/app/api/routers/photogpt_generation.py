@@ -679,9 +679,16 @@ async def photogpt_generate(req: PhotoGPTGenerateRequest, db: AsyncSession = Dep
         raise
     except Exception as e:
         logger.error(f"PhotoGPT generate error: {e}")
-        await _release_account(account.id, db)
-        await db.execute(update(PhotoGPTJob).where(PhotoGPTJob.id == job.id).values(status="failed", error_message=str(e)))
-        await db.commit()
+        try:
+            await _release_account(account.id, db)
+            await db.execute(update(PhotoGPTJob).where(PhotoGPTJob.id == job.id).values(status="failed", error_message=str(e)[:500]))
+            await db.commit()
+        except Exception as db_err:
+            logger.error(f"PhotoGPT generate error cleanup failed: {db_err}")
+            try:
+                await db.rollback()
+            except Exception:
+                pass
         return PhotoGPTGenerateResponse(success=False, error=str(e))
 
 

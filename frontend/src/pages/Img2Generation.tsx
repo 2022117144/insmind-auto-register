@@ -252,9 +252,15 @@ export default function Img2Generation() {
                     </div>
                 </div>
                 <div className="flex items-center gap-2">
-                    <Button variant="outline" size="sm" className="h-9 border-white/5 bg-card/40 hover:bg-white/10 rounded-[10px]" onClick={() => setSelectedIds(filteredJobs.map(j => j.id))}>
-                        全选
-                    </Button>
+                                    <Button variant="outline" size="sm" className="h-9 border-white/5 bg-card/40 hover:bg-white/10 rounded-[10px]" onClick={() => setSelectedIds(filteredJobs.filter(j => j.status === 'failed').map(j => j.id))}>
+                                        全选错误
+                                    </Button>
+                                    <Button variant="outline" size="sm" className="h-9 border-white/5 bg-card/40 hover:bg-white/10 rounded-[10px]" onClick={() => setSelectedIds(filteredJobs.filter(j => j.status === 'submitting' || j.status === 'submitted' || j.status === 'processing').map(j => j.id))}>
+                                        全选生成中
+                                    </Button>
+                                    <Button variant="outline" size="sm" className="h-9 border-white/5 bg-card/40 hover:bg-white/10 rounded-[10px]" onClick={() => setSelectedIds(filteredJobs.map(j => j.id))}>
+                                        全选
+                                    </Button>
                     <Button variant="outline" size="sm" className="h-9 border-white/5 bg-card/40 hover:bg-white/10 rounded-[10px]" onClick={handleSelectAllToggle}>
                         反选
                     </Button>
@@ -401,7 +407,7 @@ export default function Img2Generation() {
                         const originalCover = job.output_urls?.[currentIndex] || job.output_urls?.[0]
                         const selected = selectedIds.includes(job.id)
                         const count = job.output_urls?.length || 0
-                        const canSelect = job.status === 'success'
+                        const canSelect = true
                         return (
                             <Card key={job.id} className="group border border-white/5 bg-card/40 backdrop-blur rounded-[2rem] overflow-hidden shadow-2xl flex flex-col p-2 transition-all duration-300 hover:bg-white/5">
                                 <CardContent className="p-0 relative flex-1 flex flex-col">
