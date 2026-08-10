@@ -24,6 +24,10 @@ if __name__ == "__main__":
     
     # Ensure backend directory is in python path
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    # 确保使用项目自身的依赖，而不是 Hermes 的 venv
+    _venv_sp = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".venv_win", "Lib", "site-packages")
+    if os.path.isdir(_venv_sp):
+        sys.path.insert(0, _venv_sp)
     
     # Pre-bind socket with SO_REUSEADDR to bypass Windows zombie TCP sockets
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
