@@ -237,7 +237,7 @@ async def _acquire_account(db: AsyncSession, _retry: int = 3) -> Optional[PhotoG
         await db.execute(
             update(PhotoGPTAccount)
             .where(PhotoGPTAccount.id == acct.id)
-            .values(active=True, credits_reset_date="")
+            .values(active=True, credits_reset_date="", credits_used=0)
         )
         logger.info(chr(128260) + " 重置 WAF 拦截账号: " + acct.email)
     if waf_blocked:
@@ -506,14 +506,13 @@ async def _background_submit(account_id: int, account_email: str, account_passwo
                     await session.execute(
                         update(PhotoGPTAccount).where(PhotoGPTAccount.id == account_id)
                         .values(
-                            credits_used=acct.credits,
                             credits_reset_date=today_str,
                             status="active",
                             active=False,
                             gen_locked_until=None,
                         )
                     )
-                    logger.info(f"账号 {account_id} 被 WAF 拦截，标记为额度耗尽，{today_str} 重置")
+                    logger.info(f"账号 {account_id} 被 WAF 拦截，标记为禁用，{today_str} 重置")
                     await session.commit()
             # 换账号重试（重新 acquire，更新原 job 的 account_id）
             async with async_session_factory() as session:
