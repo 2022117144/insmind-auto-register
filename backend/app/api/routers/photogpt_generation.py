@@ -494,8 +494,8 @@ async def _background_submit(account_id: int, account_email: str, account_passwo
     except Exception as e:
         err_str = str(e)
         logger.error(f"后台提交失败 job_id={job_id}: {err_str}")
-        # 如果是 WAF 拦截或疑似账号被风控，标记为额度耗尽（次日重置）并换账号重试
-        if "suspicious" in err_str.lower() or "100113" in err_str:
+        # 如果是 WAF 拦截或额度不足（账号被风控/用完），标记为额度耗尽（次日重置）并换账号重试
+        if "suspicious" in err_str.lower() or "100113" in err_str or "credits" in err_str.lower() or "0 credits" in err_str:
             async with async_session_factory() as session:
                 from app.models.photogpt_account import PhotoGPTAccount
                 acct = (await session.execute(
