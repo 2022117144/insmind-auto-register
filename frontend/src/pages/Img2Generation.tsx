@@ -75,28 +75,28 @@ export default function Img2Generation() {
         return () => { stop(); document.removeEventListener('visibilitychange', handleVisibility) }
     }, [])
 
-    const handleGenerate = async () => {
+    const handleGenerate = () => {
         if (!prompt.trim() || generating) return
         setGenerating(true)
-        try {
-            await photogptGenApi.generate({
-                prompt,
-                aspect_ratio: aspectRatio,
-                output_num: outputNum,
-                quality,
-                resolution,
-                input_urls: inputImages.length > 0 ? inputImages : undefined,
+        photogptGenApi.generate({
+            prompt,
+            aspect_ratio: aspectRatio,
+            output_num: outputNum,
+            quality,
+            resolution,
+            input_urls: inputImages.length > 0 ? inputImages : undefined,
+        })
+            .then(() => {
+                setPrompt('')
+                setInputImages([])
+                fetchJobs({ force: true })
+                toast.success('图片生成任务已提交')
             })
-            setPrompt('')
-            setInputImages([])
-            fetchJobs({ force: true })
-            toast.success('图片生成任务已提交')
-        } catch (error: any) {
-            toast.error(error.message || '生成请求失败')
-            console.error('Generate failed:', error)
-        } finally {
-            setGenerating(false)
-        }
+            .catch((error: any) => {
+                toast.error(error.message || '生成请求失败')
+                console.error('Generate failed:', error)
+            })
+            .finally(() => setGenerating(false))
     }
 
     const handleRetry = async (job: PhotoGPTGenJob) => {
