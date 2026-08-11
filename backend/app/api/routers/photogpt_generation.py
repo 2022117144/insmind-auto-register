@@ -211,6 +211,7 @@ def _serialize(job) -> dict:
 async def _acquire_account(db: AsyncSession, _retry: int = 3) -> Optional[PhotoGPTAccount]:
     now = datetime.utcnow()
     today_str = now.strftime("%Y-%m-%d")
+    yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
 
     # 读取配置，决定用完额度后的处理方式
     auto_delete = True  # 默认删除
@@ -225,6 +226,23 @@ async def _acquire_account(db: AsyncSession, _retry: int = 3) -> Optional[PhotoG
     except Exception:
         pass
 
+    # 统一重置：重置昨天被 WAF 拦截的账号 (active=False, credits_reset_date=昨天)
+    waf_blocked = (await db.execute(
+        select(PhotoGPTAccount).where(
+            PhotoGPTAccount.active == False,
+            PhotoGPTAccount.credits_reset_date == yesterday,
+        )
+    )).scalars().all()
+    for acct in waf_blocked:
+        await db.execute(
+            update(PhotoGPTAccount)
+            .where(PhotoGPTAccount.id == acct.id)
+            .values(active=True, credits_reset_date="")
+        )
+        logger.info(chr(128260) + " 重置 WAF 拦截账号: " + acct.email)
+    if waf_blocked:
+        await db.commit()
+
     if auto_delete:
         # 自动删除模式：删掉已用完额度的账号
         await db.execute(
@@ -234,8 +252,7 @@ async def _acquire_account(db: AsyncSession, _retry: int = 3) -> Optional[PhotoG
         )
         await db.commit()
     else:
-        # 每天重置模式：把今天用完额度的账号标记为禁用（credits_reset_date = 今天）
-        # 同时重置昨天及之前用完额度的账号（credits_used 归零，清除 credits_reset_date）
+        # 每天重置模式
         exhausted = (await db.execute(
             select(PhotoGPTAccount).where(
                 PhotoGPTAccount.credits_used >= PhotoGPTAccount.credits
@@ -243,24 +260,21 @@ async def _acquire_account(db: AsyncSession, _retry: int = 3) -> Optional[PhotoG
         )).scalars().all()
         for acct in exhausted:
             if acct.credits_reset_date and acct.credits_reset_date < today_str:
-                # 昨天的禁用记录 → 重置额度
                 await db.execute(
                     update(PhotoGPTAccount)
                     .where(PhotoGPTAccount.id == acct.id)
                     .values(credits_used=0, credits_reset_date="", status="active", active=True)
                 )
-                logger.info(f"🔄 重置额度: {acct.email}")
+                logger.info(chr(128260) + " 重置额度: " + acct.email)
             elif not acct.credits_reset_date or acct.credits_reset_date == today_str:
-                # 今天用完的 → 标记为今天禁用（不删除）
                 await db.execute(
                     update(PhotoGPTAccount)
                     .where(PhotoGPTAccount.id == acct.id)
                     .values(credits_reset_date=today_str, status="active", active=False)
                 )
                 if acct.credits_reset_date != today_str:
-                    logger.info(f"⏸️ 今日额度已用完: {acct.email}，明天重置")
+                    logger.info(chr(128264) + " 今日额度已用完: " + acct.email + "，明天重置")
         await db.commit()
-
     # 原子方式：SELECT 一个空闲账号 → 尝试 UPDATE 抢锁（WHERE 带锁条件）
     # 避免 TOCTOU 竞态：两个请求同时读到同一个账号时，只有一个 UPDATE 会生效
     stmt = (
@@ -444,12 +458,24 @@ async def _background_submit(account_id: int, account_email: str, account_passwo
         if gen_data.get("code") != 100000:
             err_msg = gen_data.get("message", "")
             if "credits" in err_msg.lower() or "0 credits" in err_msg:
+                # 额度不足：标记为今天禁用，明天重置
+                _today = datetime.utcnow().strftime("%Y-%m-%d")
                 async with async_session_factory() as session:
                     await session.execute(
                         update(PhotoGPTAccount).where(PhotoGPTAccount.id == account_id)
-                        .values(status="expired", active=False)
+                        .values(active=False, credits_reset_date=_today, status="active")
                     )
                     await session.commit()
+                logger.warning(f"⏸️ 账号 {account_id} 额度不足，标记为禁用至 {_today}")
+            elif "suspicious" in err_msg.lower():
+                _today = datetime.utcnow().strftime("%Y-%m-%d")
+                async with async_session_factory() as session:
+                    await session.execute(
+                        update(PhotoGPTAccount).where(PhotoGPTAccount.id == account_id)
+                        .values(active=False, credits_reset_date=_today, status="active")
+                    )
+                    await session.commit()
+                logger.warning(f"⏸️ 账号 {account_id} 被 WAF 拦截，标记为禁用至 {_today}")
             raise Exception(f"PhotoGPT 生成提交失败: {err_msg}")
 
         project_id = gen_data["data"]["project_id"]
