@@ -347,7 +347,7 @@ async def _auto_disable_account(account: PhotoGPTAccount, db: AsyncSession, reas
 
 # ── Background Submit ────────────────────────────────────────────
 
-async def _background_submit(account_id: int, account_email: str, account_password: str, account_access_token: str, proxy_str: str | None, req, job_id: int):
+async def _background_submit(account_id: int, account_email: str, account_password: str, account_access_token: str, proxy_str: str | None, req, job_id: int, _retry: int = 3):
     """后台执行：登录/校验token → OSS 上传 → curl 提交 handle → 轮询，不阻塞路由"""
     logger = logging.getLogger(__name__)
     try:
@@ -495,7 +495,7 @@ async def _background_submit(account_id: int, account_email: str, account_passwo
         err_str = str(e)
         logger.error(f"后台提交失败 job_id={job_id}: {err_str}")
         # 如果是 WAF 拦截或额度不足（账号被风控/用完），标记为额度耗尽（次日重置）并换账号重试
-        if "suspicious" in err_str.lower() or "100113" in err_str or "credits" in err_str.lower() or "0 credits" in err_str:
+        if _retry > 0 and ("suspicious" in err_str.lower() or "100113" in err_str or "credits" in err_str.lower() or "0 credits" in err_str):
             async with async_session_factory() as session:
                 from app.models.photogpt_account import PhotoGPTAccount
                 acct = (await session.execute(
@@ -531,7 +531,7 @@ async def _background_submit(account_id: int, account_email: str, account_passwo
                     new_proxy_str = str(proxy.get("https") or proxy.get("http")) if proxy else None
                     await _background_submit(
                         new_acct.id, new_acct.email, new_acct.password or "Test123456!",
-                        new_acct.access_token or "", new_proxy_str, req, job_id
+                        new_acct.access_token or "", new_proxy_str, req, job_id, _retry - 1
                     )
                     return  # 重试成功，不写失败
         async with async_session_factory() as session:
