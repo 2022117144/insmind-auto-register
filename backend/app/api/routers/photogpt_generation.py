@@ -494,54 +494,55 @@ async def _background_submit(account_id: int, account_email: str, account_passwo
     except Exception as e:
         err_str = str(e)
         logger.error(f"后台提交失败 job_id={job_id}: {err_str}")
-        # 如果是 WAF 拦截或额度不足（账号被风控/用完），标记为额度耗尽（次日重置）并换账号重试
-        if _retry > 0 and ("suspicious" in err_str.lower() or "100113" in err_str or "credits" in err_str.lower() or "0 credits" in err_str):
-            async with async_session_factory() as session:
-                from app.models.photogpt_account import PhotoGPTAccount
-                acct = (await session.execute(
-                    select(PhotoGPTAccount).where(PhotoGPTAccount.id == account_id)
-                )).scalar_one_or_none()
-                if acct:
-                    today_str = datetime.utcnow().strftime("%Y-%m-%d")
-                    await session.execute(
-                        update(PhotoGPTAccount).where(PhotoGPTAccount.id == account_id)
-                        .values(
-                            credits_reset_date=today_str,
-                            status="active",
-                            active=False,
-                            gen_locked_until=None,
+        # 区分账号问题（WAF/额度不足）和网络问题（curl超时/失败）
+        # 账号问题：标记禁用后换账号重试
+        # 网络问题：不标记账号，直接换账号重试
+        is_account_issue = "suspicious" in err_str.lower() or "100113" in err_str or "credits" in err_str.lower() or "0 credits" in err_str
+        is_network_issue = "timed out" in err_str.lower() or "curl 请求失败" in err_str
+        if _retry > 0 and (is_account_issue or is_network_issue):
+            if is_account_issue:
+                # 账号问题：标记为今天禁用，明天重置
+                async with async_session_factory() as session:
+                    from app.models.photogpt_account import PhotoGPTAccount
+                    acct = (await session.execute(
+                        select(PhotoGPTAccount).where(PhotoGPTAccount.id == account_id)
+                    )).scalar_one_or_none()
+                    if acct:
+                        today_str = datetime.utcnow().strftime("%Y-%m-%d")
+                        await session.execute(
+                            update(PhotoGPTAccount).where(PhotoGPTAccount.id == account_id)
+                            .values(
+                                credits_reset_date=today_str,
+                                status="active",
+                                active=False,
+                                gen_locked_until=None,
+                            )
                         )
-                    )
-                    logger.info(f"账号 {account_id} 被 WAF 拦截，标记为禁用，{today_str} 重置")
-                    await session.commit()
-            # 换账号重试（重新 acquire，更新原 job 的 account_id）
+                        logger.info(f"账号 {account_id} 被 WAF/额度拦截，标记为禁用，{today_str} 重置")
+                        await session.commit()
+            # 网络问题：不标记账号，直接换账号重试
             async with async_session_factory() as session:
                 new_acct = await _acquire_account(session)
                 if new_acct:
-                    logger.info(f"WAF 拦截后换账号重试: {account_id} -> {new_acct.id}")
-                    # 更新原 job 的 account_id，重置状态为 submitting
+                    logger.info(f"后台提交失败后换账号重试: {account_id} -> {new_acct.id}")
                     await session.execute(
                         update(PhotoGPTJob).where(PhotoGPTJob.id == job_id)
                         .values(account_id=new_acct.id, status="submitting", error_message=None, project_id=None, output_urls=None, completed_at=None, updated_at=datetime.utcnow())
                     )
                     await session.commit()
-                    # 递归调用自己（用新账号，复用原 req 和 job_id）
                     proxy = _get_proxy()
                     new_proxy_str = str(proxy.get("https") or proxy.get("http")) if proxy else None
                     await _background_submit(
                         new_acct.id, new_acct.email, new_acct.password or "Test123456!",
                         new_acct.access_token or "", new_proxy_str, req, job_id, _retry - 1
                     )
-                    return  # 重试成功，不写失败
+                    return
         async with async_session_factory() as session:
             await session.execute(
                 update(PhotoGPTJob).where(PhotoGPTJob.id == job_id)
                 .values(status="failed", error_message=str(e)[:500])
             )
             await session.commit()
-
-
-
 async def _poll_generation(nc_token: str, project_id: str, job_id: int):
     """Background poll — 强化的审核拦截检测"""
     cookies = {"nc_token": nc_token}
