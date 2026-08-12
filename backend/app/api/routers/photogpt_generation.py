@@ -107,6 +107,10 @@ class PhotoGPTGenerateRequest(BaseModel):
     quality: str = "medium"
     resolution: str = "1K"
     input_urls: List[str] = []
+    task_id: str = ""  # 8765 的 batch task_id，回调时用
+    shot_idx: int = 0
+    mode: str = "first_frame"
+    project_id: str = ""
 
 class PhotoGPTGenerateResponse(BaseModel):
     success: bool
@@ -490,7 +494,14 @@ async def _background_submit(account_id: int, account_email: str, account_passwo
             await session.commit()
 
         # 开始轮询
-        await _poll_generation(nc_token, project_id, job_id)
+        callback_params = {
+                    "task_id": req.task_id if hasattr(req, "task_id") else "",
+                    "shot_idx": req.shot_idx if hasattr(req, "shot_idx") else 0,
+                    "mode": req.mode if hasattr(req, "mode") else "first_frame",
+                    "project_id": req.project_id if hasattr(req, "project_id") else project_id,
+                    "callback_url": "http://127.0.0.1:8765",
+                    }
+        await _poll_generation(nc_token, project_id, job_id, callback_params)
 
     except Exception as e:
         err_str = str(e)
@@ -544,7 +555,31 @@ async def _background_submit(account_id: int, account_email: str, account_passwo
                 .values(status="failed", error_message=str(e)[:500])
             )
             await session.commit()
-async def _poll_generation(nc_token: str, project_id: str, job_id: int):
+def _try_callback_8765(status: str, output_urls: list, job_id: int, callback_params: dict = None):
+    """尝试回调 8765，失败不影响主流程"""
+    if not callback_params:
+        return
+    try:
+        import httpx
+        base_url = callback_params.get("callback_url", "http://127.0.0.1:8765")
+        httpx.post(
+            f"{base_url}/api/photogpt/callback",
+            json={
+                "job_id": job_id,
+                "status": status,
+                "output_urls": output_urls,
+                "project_id": callback_params.get("project_id", ""),
+                "shot_idx": callback_params.get("shot_idx", 0),
+                "mode": callback_params.get("mode", "first_frame"),
+                "task_id": callback_params.get("task_id", ""),
+            },
+            timeout=5,
+        )
+    except Exception as e:
+        logger.debug(f"回调 8765 失败: {e}")
+
+
+async def _poll_generation(nc_token: str, project_id: str, job_id: int, callback_params: dict = None):
     """Background poll — 强化的审核拦截检测"""
     cookies = {"nc_token": nc_token}
     no_url_count = 0  # 连续无图片 URL 的轮询次数
@@ -623,6 +658,7 @@ async def _poll_generation(nc_token: str, project_id: str, job_id: int):
                         )
                         await session.commit()
                     logger.info(f"PhotoGPT job {job_id} completed: {output_urls}")
+                    _try_callback_8765("success", output_urls, job_id, callback_params)
                     return
 
                 # 🔴 AUDIT: result_content 返回审核文本
@@ -633,6 +669,7 @@ async def _poll_generation(nc_token: str, project_id: str, job_id: int):
                             .values(status="failed", error_message=f"图片被审核拦截: {audit_text[:200]}")
                         )
                         await session.commit()
+                    _try_callback_8765("failed", [], job_id, callback_params)
                     return
 
                 # ⚠️ EMPTY RESULT: status≥1 但无任何有效 URL
@@ -647,6 +684,7 @@ async def _poll_generation(nc_token: str, project_id: str, job_id: int):
                             .values(status="failed", error_message=f"生成完成但未返回图片URL{specific_error}")
                         )
                         await session.commit()
+                    _try_callback_8765("failed", [], job_id, callback_params)
                     return
 
                 # 🔴 EXPLICIT FAILURE: status=3
@@ -658,6 +696,7 @@ async def _poll_generation(nc_token: str, project_id: str, job_id: int):
                             .values(status="failed", error_message=error_msg)
                         )
                         await session.commit()
+                    _try_callback_8765("failed", [], job_id, callback_params)
                     return
 
                 # ⏳ STILL PROCESSING: status=0 → 累计无结果次数
@@ -669,6 +708,7 @@ async def _poll_generation(nc_token: str, project_id: str, job_id: int):
                             .values(status="failed", error_message="生成超时（3分钟仍在处理中），可能是服务器负载高或账号异常")
                         )
                         await session.commit()
+                    _try_callback_8765("failed", [], job_id, callback_params)
                     return
 
         except Exception as e:
