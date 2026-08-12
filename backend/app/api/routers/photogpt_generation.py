@@ -452,7 +452,8 @@ async def _background_submit(account_id: int, account_email: str, account_passwo
                     pass
 
         if result.returncode != 0:
-            raise Exception(f"curl 请求失败: {result.stderr[:200]}")
+            _err_detail = result.stderr[:200].strip() or result.stdout[:200].strip() or f"exit code {result.returncode}"
+            raise Exception(f"curl 请求失败: {_err_detail}")
 
         gen_data = json.loads(result.stdout) if result.stdout.strip() else {}
         if gen_data.get("code") != 100000:
